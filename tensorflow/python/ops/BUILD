@@ -1385,6 +1385,7 @@ py_strict_library(
         ":optional_ops_gen",
         "//tensorflow/core:protos_all_py",
         "//tensorflow/python/eager:backprop_util",
+        "//tensorflow/python/eager:context",
         "//tensorflow/python/framework:auto_control_deps",
         "//tensorflow/python/framework:auto_control_deps_utils",
         "//tensorflow/python/framework:constant_op",
@@ -1602,6 +1603,7 @@ py_strict_library(
         "//tensorflow/python/framework:dtypes",
         "//tensorflow/python/types:core",
         "//tensorflow/python/util:compat",
+        "//tensorflow/python/util:tf_export",
     ],
 )
 
@@ -2639,6 +2641,7 @@ cuda_py_strict_test(
     srcs = ["sparse_bincount_ops_test.py"],
     deps = [
         ":sparse_ops",
+        "//tensorflow/python/compat:v2_compat",
         "//tensorflow/python/eager:context",
         "//tensorflow/python/framework:config",
         "//tensorflow/python/framework:errors",
@@ -3276,6 +3279,7 @@ cuda_py_strict_test(
         ":array_ops_stack",
         ":check_ops",
         ":cond",
+        ":cond_v2",
         ":control_flow_assert",
         ":control_flow_case",
         ":control_flow_ops",

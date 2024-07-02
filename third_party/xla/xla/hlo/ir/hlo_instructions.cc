@@ -32,6 +32,7 @@ limitations under the License.
 #include "absl/container/flat_hash_set.h"
 #include "absl/container/inlined_vector.h"
 #include "absl/functional/function_ref.h"
+#include "absl/status/status.h"
 #include "absl/strings/escaping.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
@@ -58,7 +59,6 @@ limitations under the License.
 #include "xla/service/hlo.pb.h"
 #include "xla/shape.h"
 #include "xla/shape_util.h"
-#include "xla/status.h"
 #include "xla/util.h"
 #include "xla/window_util.h"
 #include "xla/xla_data.pb.h"
@@ -2365,10 +2365,12 @@ void HloFusionInstruction::MergeFusionInstructionIntoMultiOutput(
             break;
           }
         }
-        if (has_outside_user) {
-          new_roots.insert(
-              FindOrDie(old_to_new, old_fusion_outputs.back().first));
+        if (!has_outside_user && !user->IsRoot()) {
+          continue;
         }
+
+        new_roots.insert(
+            FindOrDie(old_to_new, old_fusion_outputs.back().first));
       }
       continue;
     }
@@ -2511,9 +2513,9 @@ std::unique_ptr<HloInstruction> HloFusionInstruction::CloneWithNewOperandsImpl(
   return new_fusion_instruction;
 }
 
-Status HloFusionInstruction::DeduplicateFusionOperands() {
+absl::Status HloFusionInstruction::DeduplicateFusionOperands() {
   if (IsCustomFusion()) {
-    return OkStatus();
+    return absl::OkStatus();
   }
   absl::flat_hash_map<const HloInstruction*, int> operand_indices;
   std::vector<int> operands_to_remove;
@@ -2528,12 +2530,12 @@ Status HloFusionInstruction::DeduplicateFusionOperands() {
     }
   }
   if (operands_to_remove.empty()) {
-    return OkStatus();
+    return absl::OkStatus();
   }
   TF_RETURN_IF_ERROR(fused_instructions_computation()
                          ->RemoveUnusedParametersFromFusedComputation());
   RemoveOperandsAtAscendingIndices(operands_to_remove);
-  return OkStatus();
+  return absl::OkStatus();
 }
 
 HloCallInstruction::HloCallInstruction(const Shape& shape,

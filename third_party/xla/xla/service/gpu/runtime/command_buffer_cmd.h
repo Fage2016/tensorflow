@@ -22,6 +22,7 @@ limitations under the License.
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -47,7 +48,6 @@ limitations under the License.
 #include "xla/service/gpu/runtime/nccl_clique_key.h"
 #include "xla/service/gpu/runtime/nccl_collective_thunk.h"
 #include "xla/service/gpu/runtime/thunk.h"
-#include "xla/status.h"
 #include "xla/stream_executor/command_buffer.h"
 #include "xla/stream_executor/device_memory.h"
 #include "xla/stream_executor/kernel.h"
@@ -55,6 +55,41 @@ limitations under the License.
 #include "xla/stream_executor/stream_executor.h"
 
 namespace xla::gpu {
+
+// clang-format off
+#define COMMAND_BUFFER_CMD_LIST(V)                       \
+  V(kTracedCommandBufferCmd, "TracedCommandBufferCmd")   \
+  V(kComputationIdCmd, "ComputationIdCmd")               \
+  V(kLaunchCmd, "LaunchCmd")                             \
+  V(kCustomKernelLaunchCmd, "CustomKernelLaunchCmd")     \
+  V(kCublasLtCmd, "CublasLtCmd")                         \
+  V(kCuDnnCmd, "CuDnnCmd")                               \
+  V(kGemmCmd, "GemmCmd")                                 \
+  V(kMemcpyDeviceToDeviceCmd, "MemcpyDeviceToDeviceCmd") \
+  V(kMemzeroCmd, "MemzeroCmd")                           \
+  V(kMemset32Cmd, "Memset32Cmd")                         \
+  V(kIfCmd, "IfCmd")                                     \
+  V(kIfElseCmd, "IfElseCmd")                             \
+  V(kCaseCmd, "CaseCmd")                                 \
+  V(kForCmd, "ForCmd")                                   \
+  V(kWhileCmd, "WhileCmd")                               \
+  V(kCustomCallCmd, "CustomCallCmd")                     \
+  V(kBarrierCmd, "BarrierCmd")                           \
+  V(kCollectiveCmd, "CollectiveCmd")                     \
+  V(kAllReduceCmd, "AllReduceCmd")                       \
+  V(kReduceScatter, "ReduceScatterCmd")                  \
+  V(kAllGatherCmd, "AllGatherCmd")                       \
+  V(kCollectiveBroadcastCmd, "CollectiveBroadcastCmd")   \
+  V(kUnknownCmd, "UnknownCmd") \
+  // clang-format on
+
+enum class CommandBufferCmdType : int32_t {
+#define DECLARE_ENUM(enum_name, cmd_name, ...) enum_name,
+  COMMAND_BUFFER_CMD_LIST(DECLARE_ENUM)
+#undef DECLARE_ENUM
+};
+
+std::string CommandBufferCmdString(CommandBufferCmdType type);
 
 //===----------------------------------------------------------------------===//
 // CommandBufferCmd
@@ -71,8 +106,9 @@ namespace xla::gpu {
 // buffers concurrently on different stream executors.
 class CommandBufferCmd {
  public:
-  explicit CommandBufferCmd(ExecutionStreamId execution_stream_id)
-      : execution_stream_id_(execution_stream_id) {}
+  CommandBufferCmd(CommandBufferCmdType cmd_type,
+                   ExecutionStreamId execution_stream_id)
+      : cmd_type_(cmd_type), execution_stream_id_(execution_stream_id) {}
   virtual ~CommandBufferCmd() = default;
 
   enum class MemoryAccess { kRead, kWrite };
@@ -222,10 +258,17 @@ class CommandBufferCmd {
     profile_annotation_ = profile_annotation;
   }
 
+  CommandBufferCmdType command_type() const { return cmd_type_; }
+
+  virtual std::string ToString() const {
+    return CommandBufferCmdString(cmd_type_);
+  }
+
   ExecutionStreamId execution_stream_id() const { return execution_stream_id_; }
 
  private:
   std::string profile_annotation_;
+  CommandBufferCmdType cmd_type_;
   ExecutionStreamId execution_stream_id_;
 };
 
@@ -395,7 +438,8 @@ class TracedCommandBuffer : public CommandBufferCmd::State {
 // A base class for commands implemented as tracing of stream activities.
 class TracedCommandBufferCmd : public CommandBufferCmd {
  protected:
-  explicit TracedCommandBufferCmd(ExecutionStreamId execution_stream_id);
+  explicit TracedCommandBufferCmd(CommandBufferCmdType cmd_type,
+                                  ExecutionStreamId execution_stream_id);
 
   // Creates a command buffer by calling a user-provided `trace` function and
   // adds it as a nested command to `command_buffer`. Traced command buffers
@@ -586,6 +630,8 @@ class IfCmd : public CommandBufferCmd {
                       const RecordParams& record_params,
                       se::CommandBuffer* command_buffer) override;
 
+  bool force_update() override;
+
   BufferUsageVector buffers() override;
 
  private:
@@ -609,6 +655,8 @@ class IfElseCmd : public CommandBufferCmd {
   absl::Status Record(const Thunk::ExecuteParams& execute_params,
                       const RecordParams& record_params,
                       se::CommandBuffer* command_buffer) override;
+
+  bool force_update() override;
 
   BufferUsageVector buffers() override;
 
@@ -634,6 +682,8 @@ class CaseCmd : public CommandBufferCmd {
                       const RecordParams& record_params,
                       se::CommandBuffer* command_buffer) override;
 
+  bool force_update() override;
+
   BufferUsageVector buffers() override;
 
  private:
@@ -657,6 +707,8 @@ class ForCmd : public CommandBufferCmd {
   absl::Status Record(const Thunk::ExecuteParams& execute_params,
                       const RecordParams& record_params,
                       se::CommandBuffer* command_buffer) override;
+
+  bool force_update() override;
 
   BufferUsageVector buffers() override;
 
@@ -682,6 +734,8 @@ class WhileCmd : public CommandBufferCmd {
   absl::Status Record(const Thunk::ExecuteParams& execute_params,
                       const RecordParams& record_params,
                       se::CommandBuffer* command_buffer) override;
+
+  bool force_update() override;
 
   BufferUsageVector buffers() override;
 
@@ -722,6 +776,70 @@ class GemmCmd : public TracedCommandBufferCmd {
   const BufferAllocation::Slice workspace_;
   // Whether to run deterministically.
   const bool deterministic_;
+};
+
+//===----------------------------------------------------------------------===//
+// CublasLtCmd
+//===----------------------------------------------------------------------===//
+
+class CublasLtCmd : public TracedCommandBufferCmd {
+ public:
+  CublasLtCmd(ExecutionStreamId execution_stream_id, GemmConfig gemm_config,
+              se::gpu::BlasLt::Epilogue epilogue, int64_t algorithm_idx,
+              BufferAllocation::Slice a_buffer,
+              BufferAllocation::Slice b_buffer,
+              BufferAllocation::Slice c_buffer,
+              BufferAllocation::Slice d_buffer,
+              BufferAllocation::Slice bias_buffer /* may be null */,
+              BufferAllocation::Slice aux_buffer /* may be null */,
+              BufferAllocation::Slice a_scale_buffer /* may be null */,
+              BufferAllocation::Slice b_scale_buffer /* may be null */,
+              BufferAllocation::Slice c_scale_buffer /* may be null */,
+              BufferAllocation::Slice d_scale_buffer /* may be null */,
+              BufferAllocation::Slice d_amax_buffer /* may be null */,
+              BufferAllocation::Slice workspace_buffer);
+
+  absl::Status Initialize(const Thunk::InitializeParams& params,
+                          StateManager& state) override;
+
+  absl::Status Record(const Thunk::ExecuteParams& execute_params,
+                      const RecordParams& record_params,
+                      se::CommandBuffer* command_buffer) override;
+
+  BufferUsageVector buffers() override;
+
+  bool IsNestedCommandBuffer() const final { return true; }
+
+ private:
+  absl::StatusOr<se::gpu::BlasLt::MatmulPlan*> GetMatmulPlan(
+      const stream_executor::Stream* stream);
+
+  absl::StatusOr<se::gpu::BlasLt::MatmulAlgorithm> GetMatmulAlgorithm(
+      const se::gpu::BlasLt::MatmulPlan* plan, int64_t max_workspace);
+
+  absl::flat_hash_map<const stream_executor::Stream*,
+                      se::gpu::BlasLt::MatmulPlanPtr>
+      matmul_plans_cache_;
+
+  absl::flat_hash_map<const se::gpu::BlasLt::MatmulPlan*,
+                      se::gpu::BlasLt::MatmulAlgorithm>
+      matmul_algorithm_cache_;
+
+  const GemmConfig gemm_config_;
+  const se::gpu::BlasLt::Epilogue epilogue_;
+  const int64_t algorithm_idx_;
+  const BufferAllocation::Slice a_buffer_;
+  const BufferAllocation::Slice b_buffer_;
+  const BufferAllocation::Slice c_buffer_;
+  const BufferAllocation::Slice d_buffer_;
+  const BufferAllocation::Slice bias_buffer_;
+  const BufferAllocation::Slice aux_buffer_;
+  const BufferAllocation::Slice a_scale_buffer_;
+  const BufferAllocation::Slice b_scale_buffer_;
+  const BufferAllocation::Slice c_scale_buffer_;
+  const BufferAllocation::Slice d_scale_buffer_;
+  const BufferAllocation::Slice d_amax_buffer_;
+  const BufferAllocation::Slice workspace_buffer_;
 };
 
 //===----------------------------------------------------------------------===//
@@ -774,7 +892,8 @@ class CustomCallCmd : public CommandBufferCmd {
                 std::vector<std::optional<Slice>> operands,
                 std::vector<std::optional<Slice>> results,
                 absl::string_view opaque)
-      : CommandBufferCmd(execution_stream_id),
+      : CommandBufferCmd(CommandBufferCmdType::kCustomCallCmd,
+                         execution_stream_id),
         call_target_(std::move(call_target)),
         opaque_(opaque),
         operands_(std::move(operands)),
@@ -785,7 +904,8 @@ class CustomCallCmd : public CommandBufferCmd {
                 std::vector<std::optional<Slice>> results,
                 AttributesMap attributes,
                 const HloComputation* called_computation)
-      : CommandBufferCmd(execution_stream_id),
+      : CommandBufferCmd(CommandBufferCmdType::kCustomCallCmd,
+                         execution_stream_id),
         handler_(handler),
         attributes_(std::move(attributes)),
         called_computation_(called_computation),
@@ -828,6 +948,10 @@ class CustomCallCmd : public CommandBufferCmd {
 // 'from_stream_id' to the execution scope created from the
 // 'execution_stream_id', e.g. Async operator lowered to command buffer requires
 // a barrier from the launching stream to the async operator's execution stream.
+//
+// In other words, all future commands added to `execution_stream_id` are
+// guaranteed to begin executing only after all already-added commands in
+// `from_stream_id` have completed.
 //===----------------------------------------------------------------------===//
 
 class BarrierCmd : public CommandBufferCmd {
@@ -842,7 +966,7 @@ class BarrierCmd : public CommandBufferCmd {
   BufferUsageVector buffers() override;
 
  private:
-  ExecutionStreamId from_stream_id_;
+  const ExecutionStreamId from_stream_id_;
 };
 
 //===----------------------------------------------------------------------===//
@@ -851,7 +975,8 @@ class BarrierCmd : public CommandBufferCmd {
 
 class CollectiveCmd : public CommandBufferCmd {
  public:
-  CollectiveCmd(ExecutionStreamId execution_stream_id,
+  CollectiveCmd(CommandBufferCmdType cmd_type,
+                ExecutionStreamId execution_stream_id,
                 ExecutionStreamId async_from_stream_id, NcclApi* nccl_api,
                 NcclCollectiveConfig config);
 

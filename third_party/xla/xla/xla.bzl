@@ -45,8 +45,8 @@ _XLA_SHARED_OBJECT_SENSITIVE_DEPS = if_static(extra_deps = [], otherwise = [
     Label("//xla/stream_executor:stream_executor_impl"),
     Label("//xla/stream_executor/gpu:gpu_init_impl"),
     "@com_google_protobuf//:protobuf",
-    "@local_tsl//tsl/framework:allocator_registry_impl",
-    "@local_tsl//tsl/framework:allocator",
+    "//xla/tsl/framework:allocator_registry_impl",
+    "//xla/tsl/framework:allocator",
     "@local_tsl//tsl/platform:env_impl",
     "@local_tsl//tsl/profiler/backends/cpu:annotation_stack_impl",
     "@local_tsl//tsl/profiler/backends/cpu:traceme_recorder_impl",
@@ -77,12 +77,9 @@ def xla_cc_test(name, deps = [], **kwargs):
         **kwargs
     )
 
-def xla_nvml_deps():
-    return ["@local_config_cuda//cuda:nvml_headers"]
-
-def xla_cub_deps():
-    return ["@local_config_cuda//cuda:cub_headers"]
-
 def xla_internal(targets, otherwise = []):
     _ = targets  # buildifier: disable=unused-variable
     return otherwise
+
+def tests_build_defs_bzl_deps():
+    return []
