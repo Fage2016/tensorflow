@@ -33,8 +33,8 @@ limitations under the License.
 #include "xla/stream_executor/device_description.pb.h"
 #include "xla/tests/hlo_test_base.h"
 #include "xla/tests/test_macros.h"
+#include "xla/tsl/lib/core/status_test_util.h"
 #include "xla/util.h"
-#include "tsl/lib/core/status_test_util.h"
 #include "tsl/platform/env.h"
 #include "tsl/platform/env_time.h"
 #include "tsl/platform/path.h"
@@ -45,7 +45,7 @@ limitations under the License.
 #include "tsl/protobuf/status.pb.h"
 
 #if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
-#include "xla/service/gpu/autotuner_util.h"
+#include "xla/service/gpu/autotuning/autotuner_util.h"
 #endif
 
 namespace xla {

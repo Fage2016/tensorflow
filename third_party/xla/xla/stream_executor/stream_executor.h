@@ -84,8 +84,10 @@ class StreamExecutor {
 
   // Creates and initializes a Stream.
   virtual absl::StatusOr<std::unique_ptr<Stream>> CreateStream(
-      std::optional<std::variant<StreamPriority, int>> priority =
-          std::nullopt) = 0;
+      std::optional<std::variant<StreamPriority, int>> priority) = 0;
+  absl::StatusOr<std::unique_ptr<Stream>> CreateStream() {
+    return CreateStream(std::nullopt);
+  }
 
   // Creates and initializes an Event.
   virtual absl::StatusOr<std::unique_ptr<Event>> CreateEvent() = 0;
@@ -155,15 +157,6 @@ class StreamExecutor {
                               const KernelArgs& args) {
     return absl::UnimplementedError("Not Implemented");
   }
-
-  // Submits command buffer for execution to the underlying platform driver.
-  virtual absl::Status Submit(Stream* stream,
-                              const CommandBuffer& command_buffer) {
-    return absl::UnimplementedError("Not Implemented");
-  }
-
-  // Releases any state associated with the previously loaded kernel.
-  virtual void UnloadKernel(const Kernel* kernel) {}
 
   // Synchronously allocates size bytes on the underlying platform and returns
   // a DeviceMemoryBase representing that allocation. In the case of failure,
@@ -240,14 +233,6 @@ class StreamExecutor {
   absl::Status SynchronousMemcpyD2H(const DeviceMemoryBase& device_src,
                                     int64_t size, void* host_dst) {
     return SynchronousMemcpy(host_dst, device_src, size);
-  }
-
-  // Enqueues an operation onto stream to set 8-bit patterns starting at
-  // location, for byte count given by size.  Returns whether the operation was
-  // successfully enqueued onto the stream.
-  virtual absl::Status Memset(Stream* stream, DeviceMemoryBase* location,
-                              uint8_t pattern, uint64_t size) {
-    return absl::InternalError("Not implemented");
   }
 
   // Deallocates stream resources on the underlying platform.

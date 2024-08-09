@@ -34,7 +34,7 @@ limitations under the License.
 #include "xla/stream_executor/platform_manager.h"
 #include "xla/stream_executor/stream_executor.h"
 #include "xla/tsl/concurrency/async_value_ref.h"
-#include "tsl/lib/core/status_test_util.h"
+#include "xla/tsl/lib/core/status_test_util.h"
 #include "tsl/platform/cpu_info.h"
 #include "tsl/platform/env.h"
 #include "tsl/platform/statusor.h"
@@ -89,10 +89,10 @@ define ptr @LlvmAddI32(ptr noundef %0) {
 }
 )";
 
-static absl::StatusOr<std::unique_ptr<StreamExecutor>> NewStreamExecutor() {
+static absl::StatusOr<StreamExecutor*> NewStreamExecutor() {
   StreamExecutorConfig config(/*ordinal=*/0);
   TF_ASSIGN_OR_RETURN(auto platform, PlatformManager::PlatformWithName("Host"));
-  TF_ASSIGN_OR_RETURN(auto stream_exec, platform->GetUncachedExecutor(config));
+  TF_ASSIGN_OR_RETURN(auto stream_exec, platform->GetExecutor(config));
   return stream_exec;
 }
 

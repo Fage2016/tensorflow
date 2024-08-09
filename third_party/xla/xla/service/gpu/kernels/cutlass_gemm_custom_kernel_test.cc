@@ -26,8 +26,8 @@ limitations under the License.
 #include "xla/stream_executor/platform_manager.h"
 #include "xla/stream_executor/stream.h"
 #include "xla/stream_executor/stream_executor.h"
+#include "xla/tsl/lib/core/status_test_util.h"
 #include "xla/xla_data.pb.h"
-#include "tsl/lib/core/status_test_util.h"
 #include "tsl/platform/path.h"
 #include "tsl/platform/statusor.h"
 #include "tsl/platform/test.h"
@@ -44,7 +44,8 @@ TEST(CutlassGemmKernelTest, SimpleGemm) {
   // Load [4, 4] x [4, 4] gemm kernel written in CUDA C++ with CUTLASS.
   TF_ASSERT_OK_AND_ASSIGN(
       auto custom_kernels,
-      GetCutlassGemmKernels("cutlass_gemm", PrimitiveType::F32, 4, 4, 4,
+      GetCutlassGemmKernels("cutlass_gemm", PrimitiveType::F32,
+                            PrimitiveType::F32, PrimitiveType::F32, 4, 4, 4,
                             /*indices=*/{0, 1, 2}, /*slices=*/{},
                             executor->GetDeviceDescription()));
   auto custom_kernel = custom_kernels[0];
