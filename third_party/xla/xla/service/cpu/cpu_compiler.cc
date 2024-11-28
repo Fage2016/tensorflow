@@ -76,6 +76,10 @@ limitations under the License.
 #include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Export.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include "xla/backends/cpu/codegen/cpu_features.h"
+#include "xla/backends/cpu/codegen/ir_compiler.h"
+#include "xla/backends/cpu/codegen/jit_compiler.h"
+#include "xla/backends/cpu/codegen/target_machine_features.h"
 #include "xla/backends/cpu/runtime/thunk.h"
 #include "xla/cpu_function_runtime.h"
 #include "xla/hlo/analysis/hlo_ordering.h"
@@ -145,7 +149,6 @@ limitations under the License.
 #include "xla/service/conditional_to_select.h"
 #include "xla/service/copy_insertion.h"
 #include "xla/service/cpu/buffer_info_util.h"
-#include "xla/service/cpu/compiler_functor.h"
 #include "xla/service/cpu/conv_canonicalization.h"
 #include "xla/service/cpu/cpu_executable.h"
 #include "xla/service/cpu/cpu_instruction_fusion.h"
@@ -158,7 +161,6 @@ limitations under the License.
 #include "xla/service/cpu/metrics.h"
 #include "xla/service/cpu/parallel_task_assignment.h"
 #include "xla/service/cpu/simple_orc_jit.h"
-#include "xla/service/cpu/target_machine_features.h"
 #include "xla/service/cpu/thunk_emitter.h"
 #include "xla/service/cpu_gpu_shape_verifier.h"
 #include "xla/service/dump.h"
@@ -468,12 +470,11 @@ void AddHloVerifier(HloPassPipeline* pipeline, HloVerifierOpts&& opts = {},
 
 absl::Status CpuCompiler::RunHloPassesThroughLayoutAssn(
     HloModule* module, bool is_aot_compile,
-    LLVMTargetMachineFeatures* target_machine_features, bool is_mlir_compile) {
+    TargetMachineFeatures* target_machine_features, bool is_mlir_compile) {
   HloPassPipeline pre_sharding_pipeline("pre-spmd-pipeline");
   // TODO(b/359982037): Run BatchedGatherScatterNormalizer after partitioning.
   pre_sharding_pipeline.AddPass<BatchedGatherScatterNormalizer>();
   TF_RETURN_IF_ERROR(pre_sharding_pipeline.Run(module).status());
-
   const int64_t num_partitions = module->config().num_partitions();
   if (num_partitions > 1) {
     if (!module->config().use_spmd_partitioning()) {
@@ -760,7 +761,7 @@ absl::Status CpuCompiler::RunHloPassesThroughLayoutAssn(
 
 absl::Status CpuCompiler::RunHloPassesAfterLayoutAssn(
     HloModule* module, bool is_aot_compile,
-    LLVMTargetMachineFeatures* target_machine_features,
+    TargetMachineFeatures* target_machine_features,
     const CompileOptions& compile_options, bool is_mlir_compile) {
   HloPassPipeline pipeline("HLO passes after layout assignment");
 
@@ -880,7 +881,7 @@ absl::Status CpuCompiler::RunHloPasses(HloModule* module, bool is_aot_compile,
                                        llvm::TargetMachine* target_machine,
                                        const CompileOptions& compile_options,
                                        bool is_mlir_compile) {
-  LLVMTargetMachineFeatures target_machine_features(target_machine);
+  TargetMachineFeatures target_machine_features(target_machine);
   TF_RETURN_IF_ERROR(RunHloPassesThroughLayoutAssn(
       module, is_aot_compile, &target_machine_features, is_mlir_compile));
 
@@ -1009,10 +1010,12 @@ absl::StatusOr<std::unique_ptr<HloModule>> CpuCompiler::RunHloPasses(
     std::unique_ptr<HloModule> module, se::StreamExecutor* /*stream_exec*/,
     const CompileOptions& options) {
   auto& config = module->config();
-  std::unique_ptr<llvm::TargetMachine> jit_target_machine =
-      SimpleOrcJIT::InferTargetMachineForJIT(
+
+  TF_ASSIGN_OR_RETURN(
+      std::unique_ptr<llvm::TargetMachine> jit_target_machine,
+      JitCompiler::InferTargetMachine(
           CompilerTargetOptions(config), CodeGenOptLevel(config),
-          config.debug_options().xla_cpu_max_isa());
+          CpuFeatureFromString(config.debug_options().xla_cpu_max_isa())));
 
   TF_RETURN_IF_ERROR(RunHloPasses(module.get(), /*is_aot_compile=*/false,
                                   jit_target_machine.get(),
@@ -1420,7 +1423,7 @@ CpuCompiler::CompileLegacyCpuExecutable(std::unique_ptr<HloModule> module) {
     return cpu_executable;
   };
 
-  LLVMTargetMachineFeatures target_machine_features((*jit)->target_machine());
+  TargetMachineFeatures target_machine_features((*jit)->target_machine());
 
   // TODO(ezhulenev): Once we fully migrate to Thunks current IrEmitter should
   // be renamed to NestedIrEmitter and be used only for emitting nested (aka
@@ -1862,7 +1865,7 @@ CpuCompiler::CompileAheadOfTime(std::unique_ptr<HloModuleGroup> module_group,
             &hlo_profile_index_map, &hlo_profile_printer_data));
       }
 
-      LLVMTargetMachineFeatures target_machine_features(target_machine.get());
+      TargetMachineFeatures target_machine_features(target_machine.get());
       std::vector<BufferInfo> buffer_infos =
           CreateBufferInfosFromBufferAssignment(*module, *assignment);
       HloComputation* computation = module->entry_computation();
@@ -1939,7 +1942,7 @@ CpuCompiler::CompileAheadOfTime(std::unique_ptr<HloModuleGroup> module_group,
                                           obj_file.getData().size()));
       };
 
-      CompilerFunctor::Options ir_compiler_options = {
+      IrCompiler::Options ir_compiler_options = {
           /*optimization_level=*/static_cast<int>(opt_level),
           /*optimize_for_size=*/
           options::OptimizeForSizeRequested(module->config()),
@@ -1951,18 +1954,18 @@ CpuCompiler::CompileAheadOfTime(std::unique_ptr<HloModuleGroup> module_group,
           /*dfsan_enabled=*/aot_options.sanitize_dataflow(),
           /*dfsan_abilists_enabled=*/aot_options.sanitize_abilists_dataflow()};
 
-      CompilerFunctor::CompilationHooks ir_compiler_hooks = {
+      IrCompiler::CompilationHooks ir_compiler_hooks = {
           pre_optimization_ir_hook,
           post_optimization_ir_hook,
           post_codegen_hook,
       };
 
-      CompilerFunctor compiler_functor([&] { return target_machine; },
-                                       std::move(ir_compiler_options),
-                                       std::move(ir_compiler_hooks));
+      IrCompiler ir_compiler([&] { return target_machine; },
+                             std::move(ir_compiler_options),
+                             std::move(ir_compiler_hooks));
 
       std::unique_ptr<llvm::MemoryBuffer> object_file =
-          cantFail(compiler_functor(*llvm_module));
+          cantFail(ir_compiler(*llvm_module));
       ObjectFileData object_file_data(object_file->getBufferStart(),
                                       object_file->getBufferEnd());
 
@@ -2113,7 +2116,7 @@ CpuExecutableAotCompilationResult::LoadExecutable(
     auto llvm_module =
         std::make_unique<llvm::Module>(kXlaModuleIdentifier, *llvm_context);
 
-    LLVMTargetMachineFeatures target_machine_features((*jit)->target_machine());
+    TargetMachineFeatures target_machine_features((*jit)->target_machine());
 
     IrEmitter nested_ir_emitter(
         nullptr, *module, *buffer_assignment, llvm_module.get(), {}, {},
