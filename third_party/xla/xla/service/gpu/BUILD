@@ -9,10 +9,6 @@ load(
     "if_rocm_is_configured",
     "rocm_copts",
 )
-load(
-    "@local_tsl//tsl/platform:build_config.bzl",
-    "tf_proto_library",
-)
 load("//xla:xla.bzl", "xla_cc_test", "xla_internal")
 load(
     "//xla/service/gpu:build_defs.bzl",
@@ -34,6 +30,10 @@ load(
     "tsl_gpu_library",
 )
 load("//xla/tsl:tsl.default.bzl", "filegroup", "get_compatible_with_portable")
+load(
+    "//xla/tsl/platform:build_config.bzl",
+    "tf_proto_library",
+)
 load(
     "//xla/tsl/platform/default:cuda_build_defs.bzl",
     "if_cuda_is_configured",
@@ -190,8 +190,10 @@ xla_cc_test(
     srcs = ["gpu_copy_insertion_test.cc"],
     deps = [
         ":buffer_sharing",
+        ":gpu_device_info_for_tests",
         "//xla:test",
         "//xla:test_helpers",
+        "//xla/hlo/analysis:hlo_dataflow_analysis",
         "//xla/hlo/ir:hlo",
         "//xla/service:copy_insertion",
         "//xla/tests:hlo_test_base",
@@ -263,7 +265,9 @@ xla_cc_test(
 
 cc_library(
     name = "gpu_device_info_for_tests",
-    testonly = 1,
+    # This is *not* a test library because it is used in a cc_binary which is used for testing but
+    # test_only libraries are not allowed in cc_binaries.
+    testonly = 0,
     srcs = ["gpu_device_info_for_tests.cc"],
     hdrs = ["gpu_device_info_for_tests.h"],
     compatible_with = get_compatible_with_portable(),
@@ -633,7 +637,6 @@ cc_library(
     hdrs = ["ir_emission_utils.h"],
     compatible_with = get_compatible_with_portable(),
     deps = [
-        ":hlo_traversal",
         ":target_util",
         "//xla:literal",
         "//xla:shape_util",
@@ -642,6 +645,7 @@ cc_library(
         "//xla:xla_data_proto_cc",
         "//xla/hlo/ir:backend_config",
         "//xla/hlo/ir:hlo",
+        "//xla/hlo/utils:hlo_traversal",
         "//xla/service:buffer_assignment",
         "//xla/service/llvm_ir:llvm_type_conversion_util",
         "//xla/service/llvm_ir:llvm_util",
@@ -668,7 +672,6 @@ xla_cc_test(
     srcs = ["ir_emission_utils_test.cc"],
     deps = [
         ":backend_configs_cc",
-        ":hlo_traversal",
         ":ir_emission_utils",
         "//xla:literal",
         "//xla:literal_util",
@@ -676,6 +679,7 @@ xla_cc_test(
         "//xla:types",
         "//xla/hlo/ir:backend_config",
         "//xla/hlo/ir:hlo",
+        "//xla/hlo/utils:hlo_traversal",
         "//xla/service:buffer_assignment",
         "//xla/tests:hlo_test_base",
         "//xla/tests:xla_internal_test_main",  # fixdeps: keep
@@ -697,6 +701,7 @@ cc_library(
         "//xla:shape_util",
         "//xla:util",
         "//xla/hlo/ir:hlo",
+        "//xla/stream_executor:device_description",
         "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/container:inlined_vector",
         "@com_google_absl//absl/strings",
@@ -1378,6 +1383,7 @@ cc_library(
         "//xla/service/gpu/transforms:copy_fusion",
         "//xla/service/gpu/transforms:horizontal_loop_fusion",
         "//xla/service/gpu/transforms:sanitize_constant_names",
+        "//xla/stream_executor:device_description",
     ],
 )
 
@@ -1554,6 +1560,7 @@ cc_library(
         "//xla/service/gpu/transforms:scatter_expander",
         "//xla/service/gpu/transforms:scatter_slice_simplifier",
         "//xla/service/gpu/transforms:softmax_rewriter_triton",
+        "//xla/service/gpu/transforms:sort_rewriter",
         "//xla/service/gpu/transforms:stream_attribute_annotator",
         "//xla/service/gpu/transforms:stream_attribute_async_wrapper",
         "//xla/service/gpu/transforms:topk_specializer",
@@ -1828,7 +1835,6 @@ cc_library(
         "//xla/service/gpu/transforms:cudnn_vectorize_convolutions",
         "//xla/service/gpu/transforms:dot_sparsity_rewriter",
         "//xla/service/gpu/transforms:gpusolver_rewriter",
-        "//xla/service/gpu/transforms:sort_rewriter",
         "//xla/service/gpu/transforms:triangular_solve_rewriter",
         "//xla/service/llvm_ir:llvm_util",
         "//xla/stream_executor:device_description",
@@ -2045,6 +2051,7 @@ cc_library(
         "//xla/hlo/transforms:hlo_constant_folding",
         "//xla/hlo/transforms:reshape_mover",
         "//xla/hlo/transforms:tuple_simplifier",
+        "//xla/pjrt/distributed:key_value_store_interface",
         "//xla/service:call_inliner",
         "//xla/service:float_support",
         "//xla/service:hlo_module_config",
@@ -2052,6 +2059,7 @@ cc_library(
         "//xla/service/gpu/autotuning:autotuner_util",
         "//xla/service/gpu/autotuning:conv_algorithm_picker",
         "//xla/service/gpu/autotuning:gemm_algorithm_picker",
+        "//xla/service/gpu/autotuning:gemm_fusion_autotuner",
         "//xla/service/gpu/llvm_gpu_backend",
         "//xla/service/gpu/transforms:algebraic_simplifier",
         "//xla/service/gpu/transforms:conv_padding_legalization",
@@ -2059,7 +2067,6 @@ cc_library(
         "//xla/service/gpu/transforms:cublas_pad_for_gemms",
         "//xla/service/gpu/transforms:cudnn_fused_conv_rewriter",
         "//xla/service/gpu/transforms:gpusolver_rewriter",
-        "//xla/service/gpu/transforms:sort_rewriter",
         "//xla/service/gpu/transforms:triangular_solve_rewriter",
         "//xla/stream_executor:device_description",
         "//xla/stream_executor:device_memory_allocator",
@@ -2399,11 +2406,21 @@ cc_library(
     srcs = ["gpu_asm_opts_util.cc"],
     hdrs = ["gpu_asm_opts_util.h"],
     compatible_with = get_compatible_with_portable(),
-    copts = tsl_copts(),
     deps = [
         "//xla:xla_proto_cc",
         "//xla/stream_executor/gpu:gpu_asm_opts",
-        "@com_google_absl//absl/strings",
+    ],
+)
+
+xla_cc_test(
+    name = "gpu_asm_opts_util_test",
+    srcs = ["gpu_asm_opts_util_test.cc"],
+    deps = [
+        ":gpu_asm_opts_util",
+        "//xla:xla_proto_cc",
+        "//xla/tests:xla_internal_test_main",
+        "@com_google_googletest//:gtest_main",
+        "@local_tsl//tsl/platform:test",
     ],
 )
 
@@ -2414,11 +2431,11 @@ cc_library(
     compatible_with = get_compatible_with_portable(),
     deps = [
         ":backend_configs_cc",
-        ":hlo_traversal",
         ":ir_emission_utils",
         ":reduction_utils",
         "//xla:shape_util",
         "//xla/hlo/ir:hlo",
+        "//xla/hlo/utils:hlo_traversal",
         "//xla/stream_executor:device_description",
         "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/container:inlined_vector",
@@ -2438,9 +2455,9 @@ xla_cc_test(
         ":backend_configs_cc",
         ":gpu_device_info_for_tests",
         ":hlo_fusion_analysis",
-        ":hlo_traversal",
         ":ir_emission_utils",
         "//xla:protobuf_util",
+        "//xla/hlo/utils:hlo_traversal",
         "//xla/stream_executor:device_description",
         "//xla/stream_executor:device_description_proto_cc",
         "//xla/tests:hlo_test_base",
@@ -2496,11 +2513,10 @@ gpu_kernel_library(
     local_defines = if_cuda_is_configured(["GOOGLE_CUDA=1"]) + if_rocm_is_configured([
         "TENSORFLOW_USE_ROCM=1",
     ]),
-    deps = if_cuda_is_configured([
-        "@local_config_cuda//cuda:cuda_headers",
-    ]) + if_rocm_is_configured([
-        "@local_config_rocm//rocm:rocm_headers",
-    ]),
+    deps = [
+        "//xla:shape_util",
+        "//xla:types",
+    ],
 )
 
 xla_test(
@@ -2558,7 +2574,6 @@ cc_library(
     deps = [
         ":backend_configs_cc",
         ":hlo_fusion_analysis",
-        ":hlo_traversal",
         ":ir_emission_utils",
         ":launch_dimensions",
         ":reduction_utils",
@@ -2567,6 +2582,7 @@ cc_library(
         "//xla:util",
         "//xla/hlo/analysis:hlo_dataflow_analysis",
         "//xla/hlo/ir:hlo",
+        "//xla/hlo/utils:hlo_traversal",
         "//xla/service:instruction_fusion",
         "//xla/stream_executor:device_description",
         "@com_google_absl//absl/algorithm:container",
@@ -2591,7 +2607,11 @@ xla_cc_test(
         ":gpu_fusible",
         "//xla/hlo/ir:hlo",
         "//xla/hlo/parser:hlo_parser",
-        "//xla/tests:hlo_test_base",
+        "//xla/service:hlo_runner",
+        "//xla/service:instruction_fusion",
+        "//xla/service:platform_util",
+        "//xla/stream_executor:device_description",
+        "//xla/tests:new_hlo_test_base",
         "//xla/tests:xla_internal_test_main",
         "@com_google_absl//absl/strings",
         "@com_google_googletest//:gtest_main",
@@ -2924,39 +2944,6 @@ cc_library(
     ],
 )
 
-cc_library(
-    name = "hlo_traversal",
-    srcs = ["hlo_traversal.cc"],
-    hdrs = ["hlo_traversal.h"],
-    compatible_with = get_compatible_with_portable(),
-    deps = [
-        "//xla:shape_util",
-        "//xla/hlo/ir:hlo",
-        "@com_google_absl//absl/algorithm:container",
-        "@com_google_absl//absl/container:flat_hash_set",
-        "@com_google_absl//absl/container:inlined_vector",
-        "@com_google_absl//absl/log:check",
-        "@com_google_absl//absl/memory",
-        "@com_google_absl//absl/strings:string_view",
-        "@com_google_absl//absl/types:span",
-    ],
-)
-
-xla_cc_test(
-    name = "hlo_traversal_test",
-    srcs = ["hlo_traversal_test.cc"],
-    deps = [
-        ":hlo_traversal",
-        "//xla/hlo/ir:hlo",
-        "//xla/service:pattern_matcher",
-        "//xla/service:pattern_matcher_gmock",
-        "//xla/tests:hlo_test_base",
-        "@com_google_absl//absl/algorithm:container",
-        "@com_google_absl//absl/strings:string_view",
-        "@com_google_googletest//:gtest_main",
-    ],
-)
-
 xla_test(
     name = "determinism_test",
     srcs = ["determinism_test.cc"],
@@ -3107,6 +3094,7 @@ cc_library(
     deps = [
         ":backend_configs_cc",
         "//xla/hlo/ir:hlo",
+        "//xla/service:collective_ops_utils",
         "//xla/service:collective_utils",
         "//xla/stream_executor:device_description",
         "@com_google_absl//absl/log",
@@ -3125,6 +3113,7 @@ xla_cc_test(
         ":gpu_hlo_schedule",
         "//xla:util",
         "//xla/hlo/ir:hlo",
+        "//xla/hlo/pass:hlo_pass",
         "//xla/hlo/pass:hlo_pass_pipeline",
         "//xla/hlo/transforms:hlo_dce",
         "//xla/hlo/utils:hlo_query",
