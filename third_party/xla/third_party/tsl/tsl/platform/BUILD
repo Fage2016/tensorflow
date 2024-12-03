@@ -5,14 +5,6 @@
 #   to other TF components outside of TSL.
 
 load(
-    "@bazel_skylib//:bzl_library.bzl",
-    "bzl_library",
-)
-load(
-    "@local_tsl//tsl/platform:rules_cc.bzl",
-    "cc_library",
-)
-load(
     "@local_xla//xla/tsl:tsl.bzl",
     "if_not_fuchsia",
     "internal_visibility",
@@ -20,13 +12,12 @@ load(
 )
 load("@local_xla//xla/tsl:tsl.default.bzl", "get_compatible_with_portable")
 load(
-    "//tsl/platform:build_config.bzl",
+    "@local_xla//xla/tsl/platform:build_config.bzl",
     "tf_cuda_root_path_deps",
     "tf_error_logging_deps",
     "tf_fingerprint_deps",
     "tf_google_mobile_srcs_no_runtime",
     "tf_logging_deps",
-    "tf_platform_alias",
     "tf_platform_deps",
     "tf_protobuf_compiler_deps",
     "tf_resource_deps",
@@ -36,7 +27,11 @@ load(
     "tsl_grpc_credentials_deps",
     "tsl_protobuf_deps",
 )
-load("//tsl/platform:build_config_root.bzl", "if_static")
+load("@local_xla//xla/tsl/platform:build_config_root.bzl", "if_static")
+load(
+    "@local_xla//xla/tsl/platform:rules_cc.bzl",
+    "cc_library",
+)
 
 package(
     # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
@@ -44,19 +39,6 @@ package(
         "//visibility:public",
     ],
     licenses = ["notice"],
-)
-
-exports_files(
-    [
-        "mutex.h",
-        "load_library.h",
-        "stringpiece_test.cc",
-    ],
-    visibility = internal_visibility([
-        "//tensorflow/core/platform:__subpackages__",
-        "//tsl:__subpackages__",
-        "@local_xla//xla/tsl:__subpackages__",
-    ]),
 )
 
 cc_library(
@@ -411,6 +393,7 @@ filegroup(
     srcs = [
         "test.h",
         "test_benchmark.h",
+        "@local_xla//xla/tsl/platform:test_hdrs",
     ],
     compatible_with = get_compatible_with_portable(),
     visibility = internal_visibility([
@@ -424,6 +407,7 @@ filegroup(
     testonly = 1,
     srcs = [
         "test.h",
+        "@local_xla//xla/tsl/platform:android_test_srcs",
     ],
     compatible_with = get_compatible_with_portable(),
     visibility = internal_visibility([
@@ -458,6 +442,7 @@ filegroup(
     srcs = [
         "ctstring.h",
         "ctstring_internal.h",
+        "@local_xla//xla/tsl/platform:ctstring",
     ],
     compatible_with = get_compatible_with_portable(),
 )
@@ -501,6 +486,7 @@ filegroup(
         "stringprintf.h",
         "subprocess.h",
         "thread_annotations.h",
+        "@local_xla//xla/tsl/platform:lib_hdrs",
         "@local_xla//xla/tsl/platform/profile_utils:android_armv7a_cpu_utils_helper.h",
         "@local_xla//xla/tsl/platform/profile_utils:clock_cycle_profiler.h",
         "@local_xla//xla/tsl/platform/profile_utils:cpu_utils.h",
@@ -519,6 +505,7 @@ filegroup(
         "threadpool.h",
         "threadpool_interface.h",
         "threadpool_options.h",
+        "@local_xla//xla/tsl/platform:base_hdrs",
     ],
     compatible_with = get_compatible_with_portable(),
 )
@@ -535,6 +522,7 @@ filegroup(
         "prefetch.h",
         "protobuf.h",
         "thread_annotations.h",
+        "@local_xla//xla/tsl/platform:framework_lite_hdrs",
     ],
     compatible_with = get_compatible_with_portable(),
 )
@@ -615,6 +603,7 @@ filegroup(
         "threadpool.h",
         "threadpool_interface.h",
         "tracing.h",
+        "@local_xla//xla/tsl/platform:mobile_srcs_no_runtime",
     ] + select({
         "@local_xla//xla/tsl:fuchsia": tf_google_mobile_srcs_no_runtime(),
         "//conditions:default": [
@@ -637,6 +626,7 @@ filegroup(
         "test_benchmark.h",
         "threadpool_options.h",
         "unbounded_work_queue.h",
+        "@local_xla//xla/tsl/platform:mobile_srcs_only_runtime",
         "@local_xla//xla/tsl/platform/profile_utils:android_armv7a_cpu_utils_helper.cc",
         "@local_xla//xla/tsl/platform/profile_utils:android_armv7a_cpu_utils_helper.h",
         "@local_xla//xla/tsl/platform/profile_utils:cpu_utils.cc",
@@ -662,6 +652,7 @@ filegroup(
             "dynamic_annotations.h",
         ],
     ) + [
+        "@local_xla//xla/tsl/platform:legacy_lib_internal_headers",
         "@local_xla//xla/tsl/platform/profile_utils:android_armv7a_cpu_utils_helper.h",
         "@local_xla//xla/tsl/platform/profile_utils:clock_cycle_profiler.h",
         "@local_xla//xla/tsl/platform/profile_utils:cpu_utils.h",
@@ -703,6 +694,9 @@ exports_files(
         "snappy.h",
         "stacktrace_handler.h",
         "subprocess.h",
+        "mutex.h",
+        "load_library.h",
+        "stringpiece_test.cc",
         "test.h",
         "threadpool.cc",
         "threadpool.h",
@@ -710,7 +704,6 @@ exports_files(
         "tracing.h",
     ],
     visibility = internal_visibility([
-        ":__subpackages__",
         "//tensorflow:__subpackages__",
     ]),
 )
@@ -723,6 +716,7 @@ filegroup(
         "platform.h",
         "protobuf.h",
         "stringpiece.h",
+        "@local_xla//xla/tsl/platform:lib_proto_parsing_hdrs",
     ],
     compatible_with = get_compatible_with_portable(),
     visibility = internal_visibility([
@@ -752,6 +746,7 @@ filegroup(
         "statusor.h",
         "tracing.h",
         "unbounded_work_queue.h",
+        "@local_xla//xla/tsl/platform:lib_internal_public_hdrs",
     ],
     compatible_with = get_compatible_with_portable(),
     visibility = internal_visibility([
@@ -766,6 +761,7 @@ filegroup(
         "bfloat16.h",
         "macros.h",
         "platform.h",
+        "@local_xla//xla/tsl/platform:tflite_portable_logging_hdrs",
     ],
     compatible_with = get_compatible_with_portable(),
     visibility = internal_visibility([
@@ -783,6 +779,7 @@ filegroup(
         "mem.h",
         "platform.h",
         "stringpiece.h",
+        "@local_xla//xla/tsl/platform:jpeg_internal_hdrs",
     ],
     compatible_with = get_compatible_with_portable(),
     visibility = internal_visibility([
@@ -800,6 +797,7 @@ filegroup(
         "macros.h",
         "mem.h",
         "platform.h",
+        "@local_xla//xla/tsl/platform:gif_internal_hdrs",
     ],
     compatible_with = get_compatible_with_portable(),
     visibility = internal_visibility([
@@ -822,6 +820,7 @@ filegroup(
         "env_time.h",
         "macros.h",
         "platform.h",
+        "@local_xla//xla/tsl/platform:xla_cpu_runtime_srcs",
     ],
     compatible_with = get_compatible_with_portable(),
 )
@@ -899,6 +898,7 @@ filegroup(
     name = "stacktrace_handler_hdrs",
     srcs = [
         "stacktrace_handler.h",
+        "@local_xla//xla/tsl/platform:stacktrace_handler_hdrs",
     ],
     compatible_with = get_compatible_with_portable(),
 )
@@ -1152,6 +1152,7 @@ filegroup(
         "raw_coding.h",
         "scanner.h",
         "str_util.h",
+        "@local_xla//xla/tsl/platform:lib_internal_private_hdrs",
     ],
     compatible_with = get_compatible_with_portable(),
     visibility = internal_visibility(["//tensorflow/core:__pkg__"]),
@@ -1258,7 +1259,10 @@ cc_library(
 
 filegroup(
     name = "tensor_float_32_hdr",
-    srcs = ["tensor_float_32_utils.h"],
+    srcs = [
+        "tensor_float_32_utils.h",
+        "@local_xla//xla/tsl/platform:tensor_float_32_hdr",
+    ],
     compatible_with = get_compatible_with_portable(),
 )
 
@@ -1747,18 +1751,6 @@ tsl_cc_test(
         ":test",
         ":test_main",
     ],
-)
-
-bzl_library(
-    name = "rules_cc_bzl",
-    srcs = ["rules_cc.bzl"],
-    deps = tf_platform_alias("rules_cc_bzl"),
-)
-
-bzl_library(
-    name = "build_config_root_bzl",
-    srcs = ["build_config_root.bzl"],
-    deps = tf_platform_alias("build_config_root_bzl"),
 )
 
 cc_library(

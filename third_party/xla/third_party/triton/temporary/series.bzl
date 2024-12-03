@@ -14,10 +14,6 @@ those to this list.
 """
 
 temporary_patch_list = [
-    "//third_party/triton:temporary/sparsity.patch",
-    "//third_party/triton:temporary/replace_unreachable_by_abort.patch",
-    "//third_party/triton:temporary/block_k_16_fix.patch",
-    "//third_party/triton:temporary/index_cast_ui_axis_info.patch",
-    "//third_party/triton:temporary/reduce_with_slice.patch",
+    "//third_party/triton:temporary/launcher_fix.patch",
     # Add new patches just above this line
 ]

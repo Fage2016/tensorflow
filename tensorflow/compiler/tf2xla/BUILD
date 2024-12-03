@@ -4,10 +4,10 @@ load("@local_config_rocm//rocm:build_defs.bzl", "if_rocm_is_configured")
 # load("//devtools/deps/check:deps_check.bzl", "check_dependencies")
 # copybara:uncomment_end
 
-load("@local_tsl//tsl/platform:build_config_root.bzl", "if_static")
 load("@local_xla//xla:xla.bzl", "xla_py_proto_library")
 load("@local_xla//xla/service/cpu:build_defs.bzl", "runtime_copts")
 load("@local_xla//xla/tsl/mkl:build_defs.bzl", "mkl_deps")
+load("@local_xla//xla/tsl/platform:build_config_root.bzl", "if_static")
 load(
     "@local_xla//xla/tsl/platform/default:cuda_build_defs.bzl",
     "if_cuda_is_configured",
@@ -540,6 +540,8 @@ cc_library(
         "@local_xla//xla:xla_data_proto_cc",
         "@local_xla//xla/client:client_library",
         "@local_xla//xla/client:local_client",
+        "@local_xla//xla/core/collectives:clique_id",
+        "@local_xla//xla/core/collectives:clique_key",
         "@local_xla//xla/hlo/builder:value_inference",
         "@local_xla//xla/hlo/builder:xla_builder",
         "@local_xla//xla/hlo/builder:xla_computation",
@@ -730,6 +732,9 @@ cc_library(
         "@com_google_absl//absl/types:span",
         "@local_xla//xla:executable_run_options",
         "@local_xla//xla:types",
+        "@local_xla//xla/backends/gpu/collectives:gpu_clique_key",
+        "@local_xla//xla/core/collectives:clique_id",
+        "@local_xla//xla/core/collectives:clique_key",
         "@local_xla//xla/hlo/builder:xla_builder",
         "@local_xla//xla/hlo/builder:xla_computation",
         "@local_xla//xla/hlo/builder/lib:arithmetic",
@@ -738,7 +743,6 @@ cc_library(
         "@local_xla//xla/hlo/translate/mhlo_to_hlo:layout_util",
         "@local_xla//xla/service:computation_placer_hdr",
         "@local_xla//xla/service/gpu:gpu_executable_run_options",
-        "@local_xla//xla/service/gpu/runtime:nccl_clique_key",
         "@local_xla//xla/stream_executor:stream",
         "@local_xla//xla/stream_executor:stream_executor_h",
     ],
