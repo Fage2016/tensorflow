@@ -56,6 +56,7 @@ limitations under the License.
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_opcode.h"
 #include "xla/hlo/utils/hlo_traversal.h"
+#include "xla/service/gpu/backend_configs.pb.h"
 #include "xla/service/gpu/model/constraint_expression.h"
 #include "xla/service/gpu/model/symbolic_tile.h"
 #include "xla/service/gpu/model/symbolic_tiled_hlo_instruction.h"
@@ -696,7 +697,7 @@ bool TilingCoversWholeShapeUniquely(TiledHloInstruction* tiled_hlo_instr) {
     return false;
   }
   auto range_evaluator = tile_offset_indexing.GetRangeEvaluator();
-  for (int64_t i = 0; i < output_shape.rank(); ++i) {
+  for (int64_t i = 0; i < output_shape.dimensions_size(); ++i) {
     // For now, all strides need to be 0 or 1. With stride 0, we also need to
     // check whether the tile covers the whole dimension.
     // TODO(b/390559452): If we allow strides with absolute value > 1, we

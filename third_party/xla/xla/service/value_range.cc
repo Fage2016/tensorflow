@@ -94,8 +94,9 @@ Range RecursivelyIdentifyRange(
     absl::flat_hash_map<const HloInstruction*, Range>& known_ranges,
     const HloAliasAnalysis* alias_analysis) {
   // Non scalar or non-integer HLO. Abort.
-  if ((!instr->shape().IsInteger() && instr->shape().element_type() != PRED) ||
-      instr->shape().rank() != 0) {
+  if ((!instr->shape().AreAllLeavesIntegers() &&
+       instr->shape().element_type() != PRED) ||
+      instr->shape().dimensions_size() != 0) {
     return Range{};
   }
   VLOG(5) << "Computing Range for " << instr->ToString();
@@ -165,7 +166,8 @@ Range RecursivelyIdentifyRange(
       return Range{};
     }
     case HloOpcode::kConstant: {
-      if (instr->shape().element_type() == PRED && instr->shape().rank() == 0) {
+      if (instr->shape().element_type() == PRED &&
+          instr->shape().dimensions_size() == 0) {
         if (instr->literal().IsAll(true)) {
           return RecordAndReturnRange(
               Range{ConstantValue::GetOne(/*bitwidth=*/1, /*is_signed=*/false),
@@ -179,7 +181,7 @@ Range RecursivelyIdentifyRange(
                   /*is_linear=*/true},
             instr, known_ranges);
       }
-      if (!instr->shape().IsInteger()) {
+      if (!instr->shape().AreAllLeavesIntegers()) {
         return Range{};
       }
       VLOG(5) << "Handling Constant";
@@ -205,7 +207,7 @@ Range RecursivelyIdentifyRange(
           instr, known_ranges);
     }
     case HloOpcode::kAdd: {
-      if (!instr->shape().IsInteger()) {
+      if (!instr->shape().AreAllLeavesIntegers()) {
         return Range{};
       }
       VLOG(5) << "Handling Add";
@@ -235,7 +237,7 @@ Range RecursivelyIdentifyRange(
           instr, known_ranges);
     }
     case HloOpcode::kMultiply: {
-      if (!instr->shape().IsInteger()) {
+      if (!instr->shape().AreAllLeavesIntegers()) {
         return Range{};
       }
       VLOG(5) << "Handling Multiply";
@@ -300,7 +302,7 @@ Range RecursivelyIdentifyRange(
           instr, known_ranges);
     }
     case HloOpcode::kSubtract: {
-      if (!instr->shape().IsInteger()) {
+      if (!instr->shape().AreAllLeavesIntegers()) {
         return Range{};
       }
       VLOG(5) << "Handling Subtract";

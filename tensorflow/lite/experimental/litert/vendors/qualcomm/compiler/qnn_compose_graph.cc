@@ -18,7 +18,9 @@
 #include <stdbool.h>
 #include <stdio.h>
 
+#include <algorithm>
 #include <cstdint>
+#include <iterator>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -48,6 +50,7 @@
 #include "tensorflow/lite/experimental/litert/vendors/qualcomm/core/builders/elementwise_op_builder.h"
 #include "tensorflow/lite/experimental/litert/vendors/qualcomm/core/builders/embedding_lookup_op_builder.h"
 #include "tensorflow/lite/experimental/litert/vendors/qualcomm/core/builders/fully_connected_op_builder.h"
+#include "tensorflow/lite/experimental/litert/vendors/qualcomm/core/builders/fully_connected_op_builder_htp.h"
 #include "tensorflow/lite/experimental/litert/vendors/qualcomm/core/builders/gather_op_builder.h"
 #include "tensorflow/lite/experimental/litert/vendors/qualcomm/core/builders/gelu_op_builder.h"
 #include "tensorflow/lite/experimental/litert/vendors/qualcomm/core/builders/hard_swish_op_builder.h"
@@ -59,6 +62,8 @@
 #include "tensorflow/lite/experimental/litert/vendors/qualcomm/core/builders/pool2d_op_builder.h"
 #include "tensorflow/lite/experimental/litert/vendors/qualcomm/core/builders/quantize_op_builder.h"
 #include "tensorflow/lite/experimental/litert/vendors/qualcomm/core/builders/reduce_op_builder.h"
+#include "tensorflow/lite/experimental/litert/vendors/qualcomm/core/builders/relu6_op_builder.h"
+#include "tensorflow/lite/experimental/litert/vendors/qualcomm/core/builders/relu_op_builder.h"
 #include "tensorflow/lite/experimental/litert/vendors/qualcomm/core/builders/reshape_op_builder.h"
 #include "tensorflow/lite/experimental/litert/vendors/qualcomm/core/builders/resize_op_builder.h"
 #include "tensorflow/lite/experimental/litert/vendors/qualcomm/core/builders/rms_norm_op_builder.h"
@@ -69,6 +74,7 @@
 #include "tensorflow/lite/experimental/litert/vendors/qualcomm/core/builders/split_op_builder.h"
 #include "tensorflow/lite/experimental/litert/vendors/qualcomm/core/builders/tanh_op_builder.h"
 #include "tensorflow/lite/experimental/litert/vendors/qualcomm/core/builders/transpose_op_builder.h"
+#include "tensorflow/lite/experimental/litert/vendors/qualcomm/core/common.h"
 #include "tensorflow/lite/experimental/litert/vendors/qualcomm/core/wrappers/op_wrapper.h"
 #include "tensorflow/lite/experimental/litert/vendors/qualcomm/core/wrappers/quantize_params_wrapper.h"
 #include "tensorflow/lite/experimental/litert/vendors/qualcomm/core/wrappers/tensor_wrapper.h"
@@ -332,6 +338,16 @@ LiteRtStatus ConvertOp(
                                                  output_tensors);
       break;
     }
+    case LiteRtOpCode::kLiteRtOpCodeTflMinimum: {
+      op_wrappers = ::qnn::BuildElementwiseMinimumOp(tensor_pool, input_tensors,
+                                                     output_tensors);
+      break;
+    }
+    case LiteRtOpCode::kLiteRtOpCodeTflMaximum: {
+      op_wrappers = ::qnn::BuildElementwiseMaximumOp(tensor_pool, input_tensors,
+                                                     output_tensors);
+      break;
+    }
     case LiteRtOpCode::kLiteRtOpCodeTflEmbeddingLookup: {
       op_wrappers = ::qnn::BuildEmbeddingLookupOp(tensor_pool, input_tensors,
                                                   output_tensors);
@@ -344,8 +360,16 @@ LiteRtStatus ConvertOp(
       bool keep_num_dims{};
       LITERT_RETURN_IF_ERROR(LiteRtGetFullyConnectedKeepNumDimsOption(
           litert_op.Get(), &keep_num_dims));
-      op_wrappers = ::qnn::BuildFullyConnectedOp(tensor_pool, input_tensors,
-                                                 output_tensors, keep_num_dims);
+      // TODO(jiunkaiy): Use compile interface to get useHtpPreferencs.
+      constexpr LiteRtQnnOptions qnn_options = LITERT_QNN_OPTIONS_INIT;
+      if (qnn_options.useHtpPreferencs) {
+        op_wrappers = ::qnn::BuildFullyConnectedOpHtp(
+            tensor_pool, input_tensors, output_tensors, keep_num_dims);
+      }
+      if (op_wrappers.empty()) {
+        op_wrappers = ::qnn::BuildFullyConnectedOp(
+            tensor_pool, input_tensors, output_tensors, keep_num_dims);
+      }
       break;
     }
     case LiteRtOpCode::kLiteRtOpCodeTflGather: {
@@ -361,6 +385,16 @@ LiteRtStatus ConvertOp(
     case LiteRtOpCode::kLiteRtOpCodeTflGelu: {
       op_wrappers =
           ::qnn::BuildGeluOp(tensor_pool, input_tensors, output_tensors);
+      break;
+    }
+    case LiteRtOpCode::kLiteRtOpCodeTflRelu: {
+      op_wrappers =
+          ::qnn::BuildReluOp(tensor_pool, input_tensors, output_tensors);
+      break;
+    }
+    case LiteRtOpCode::kLiteRtOpCodeTflRelu6: {
+      op_wrappers =
+          ::qnn::BuildRelu6Op(tensor_pool, input_tensors, output_tensors);
       break;
     }
     case LiteRtOpCode::kLiteRtOpCodeTflBatchMatmul: {
@@ -385,6 +419,11 @@ LiteRtStatus ConvertOp(
     case LiteRtOpCode::kLiteRtOpCodeTflQuantize: {
       op_wrappers =
           ::qnn::BuildQuantizeOp(tensor_pool, input_tensors, output_tensors);
+      break;
+    }
+    case LiteRtOpCode::kLiteRtOpCodeTflDequantize: {
+      op_wrappers =
+          ::qnn::BuildDequantizeOp(tensor_pool, input_tensors, output_tensors);
       break;
     }
     case LiteRtOpCode::kLiteRtOpCodeTflSum: {
@@ -569,11 +608,23 @@ LiteRtStatus ConvertOp(
                                                  half_pixel_centers);
       break;
     }
+    case LiteRtOpCode::kLiteRtOpCodeTflResizeNearestNeighbor: {
+      bool align_corners;
+      LITERT_RETURN_IF_ERROR(LiteRtGetResizeNearestNeighborAlignCornersOption(
+          litert_op.Get(), &align_corners));
+      bool half_pixel_centers;
+      LITERT_RETURN_IF_ERROR(
+          LiteRtGetResizeNearestNeighborHalfPixelCenterOption(
+              litert_op.Get(), &half_pixel_centers));
+      op_wrappers = ::qnn::BuildResizeNearestOp(tensor_pool, input_tensors,
+                                                output_tensors, align_corners,
+                                                half_pixel_centers);
+      break;
+    }
     default: {
       LITERT_LOG(LITERT_ERROR,
                  "LiteRT Op Code: %d is not supported in Qualcomm Compiler.",
                  litert_op.Code());
-      return kLiteRtStatusErrorUnsupported;
     }
   }
   return kLiteRtStatusOk;
@@ -590,11 +641,7 @@ LiteRtStatus MapGraph(QnnManager& qnn, Qnn_ContextHandle_t context_handle,
   // Legalize subgraph inputs and update tensors in scope
   //
 
-  ::qnn::TensorPool tensor_pool(
-      [&qnn, &graph_mapper](::qnn::TensorWrapper& tensor_wrapper) {
-        qnn.Api()->tensorCreateGraphTensor(graph_mapper.QnnGraph(),
-                                           &tensor_wrapper.GetQnnTensor());
-      });
+  ::qnn::TensorPool tensor_pool;
   absl::flat_hash_map<LiteRtTensor, ::qnn::TensorWrapper*>
       litert_tensor_to_wrapper;
 
@@ -612,6 +659,8 @@ LiteRtStatus MapGraph(QnnManager& qnn, Qnn_ContextHandle_t context_handle,
   // Topologically traverse graph, legalizing and updating tensors in scope
   //
 
+  // TODO: make ConvertOp accept a vector and append OpWrapper in it.
+  std::vector<::qnn::OpWrapper> graph_op_wrappers;
   std::ostringstream dump;
   for (const auto& op : graph_mapper.Graph().Ops()) {
     // Dump op info.
@@ -648,11 +697,18 @@ LiteRtStatus MapGraph(QnnManager& qnn, Qnn_ContextHandle_t context_handle,
     std::vector<::qnn::OpWrapper> op_wrappers;
     LITERT_RETURN_IF_ERROR(
         ConvertOp(op, tensor_pool, input_tensors, output_tensors, op_wrappers));
-
-    for (const auto& op_wrapper : op_wrappers) {
-      qnn.Api()->graphAddNode(graph_mapper.QnnGraph(),
-                              op_wrapper.GetOpConfig());
-    }
+    std::move(op_wrappers.begin(), op_wrappers.end(),
+              std::back_inserter(graph_op_wrappers));
+  }
+  // Insert all tensors into Qnn graph and update the id of Qnn_Tensor_t inside.
+  tensor_pool.ForEach(
+      [&qnn, &graph_mapper](::qnn::TensorWrapper& tensor_wrapper) {
+        qnn.Api()->tensorCreateGraphTensor(graph_mapper.QnnGraph(),
+                                           &tensor_wrapper.GetQnnTensor());
+      });
+  // Then op can be added into Qnn graph after the tensor ids are updated.
+  for (auto& op_wrapper : graph_op_wrappers) {
+    qnn.Api()->graphAddNode(graph_mapper.QnnGraph(), op_wrapper.GetOpConfig());
   }
 
   LITERT_RETURN_STATUS_IF_QNN_NOT_OK(graph_mapper.Finalize());

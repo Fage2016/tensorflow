@@ -215,6 +215,12 @@ cc_library(
 )
 
 cc_library(
+    name = "litert_gl_types",
+    srcs = [],
+    hdrs = ["litert_gl_types.h"],
+)
+
+cc_library(
     name = "litert_tensor_buffer",
     srcs = [
         "litert_tensor_buffer.cc",
@@ -233,9 +239,11 @@ cc_library(
     deps = [
         ":litert_common",
         ":litert_event",
+        ":litert_gl_types",
         ":litert_logging",
         ":litert_model",
         ":litert_tensor_buffer_types",
+        "//tensorflow/lite/experimental/litert/cc:litert_expected",
         "//tensorflow/lite/experimental/litert/runtime:tensor_buffer",
         "@com_google_absl//absl/types:span",
         "@opencl_headers",
@@ -301,9 +309,10 @@ cc_library(
         "litert_compilation_options.h",
     ],
     deps = [
-        ":litert_accelerator_options",
+        ":litert_accelerator_compilation_options",
         ":litert_common",
         ":litert_logging",
+        "//tensorflow/lite/experimental/litert/cc:litert_macros",
         "//tensorflow/lite/experimental/litert/runtime:compilation_options",
     ],
 )
@@ -312,10 +321,11 @@ cc_test(
     name = "litert_compilation_options_test",
     srcs = ["litert_compilation_options_test.cc"],
     deps = [
-        ":litert_accelerator_options",
+        ":litert_accelerator_compilation_options",
         ":litert_common",
         ":litert_compilation_options",
-        "//tensorflow/lite/experimental/litert/core:accelerator",
+        "//tensorflow/lite/experimental/litert/cc:litert_expected",
+        "//tensorflow/lite/experimental/litert/cc:litert_macros",
         "@com_google_googletest//:gtest_main",
     ],
 )
@@ -383,36 +393,14 @@ cc_test(
 )
 
 cc_library(
-    name = "litert_accelerator_options",
-    srcs = ["litert_accelerator_options.cc"],
-    hdrs = ["litert_accelerator_options.h"],
-    deps = [
-        ":litert_common",
-        "//tensorflow/lite/experimental/litert/core:accelerator",
-    ],
-)
-
-cc_test(
-    name = "litert_accelerator_options_test",
-    srcs = ["litert_accelerator_options_test.cc"],
-    deps = [
-        ":litert_accelerator_options",
-        ":litert_common",
-        "//tensorflow/lite/experimental/litert/core:accelerator",
-        "//tensorflow/lite/experimental/litert/test:matchers",
-        "@com_google_googletest//:gtest_main",
-    ],
-)
-
-cc_library(
     name = "litert_accelerator",
     srcs = ["litert_accelerator.cc"],
     hdrs = ["litert_accelerator.h"],
     deps = [
         ":litert_common",
         "//tensorflow/lite/experimental/litert/cc:litert_expected",
-        "//tensorflow/lite/experimental/litert/core:accelerator",
         "//tensorflow/lite/experimental/litert/core:environment",
+        "//tensorflow/lite/experimental/litert/runtime:accelerator",
     ],
 )
 
@@ -424,7 +412,30 @@ cc_test(
         ":litert_accelerator_registration",
         ":litert_common",
         ":litert_environment",
-        "//tensorflow/lite/experimental/litert/core:accelerator",
+        "//tensorflow/lite/experimental/litert/runtime:accelerator",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+cc_library(
+    name = "litert_accelerator_compilation_options",
+    srcs = ["litert_accelerator_compilation_options.cc"],
+    hdrs = ["litert_accelerator_compilation_options.h"],
+    deps = [
+        ":litert_common",
+    ],
+)
+
+cc_test(
+    name = "litert_accelerator_compilation_options_test",
+    srcs = ["litert_accelerator_compilation_options_test.cc"],
+    deps = [
+        ":litert_accelerator_compilation_options",
+        ":litert_common",
+        "//tensorflow/lite/experimental/litert/cc:litert_expected",
+        "//tensorflow/lite/experimental/litert/cc:litert_macros",
+        "//tensorflow/lite/experimental/litert/core:version",
+        "//tensorflow/lite/experimental/litert/test:matchers",
         "@com_google_googletest//:gtest_main",
     ],
 )
@@ -435,11 +446,11 @@ cc_library(
     hdrs = ["litert_accelerator_registration.h"],
     deps = [
         ":litert_accelerator",
-        ":litert_accelerator_options",
+        ":litert_accelerator_compilation_options",
         ":litert_common",
         "//tensorflow/lite/experimental/litert/cc:litert_expected",
-        "//tensorflow/lite/experimental/litert/core:accelerator",
         "//tensorflow/lite/experimental/litert/core:environment",
+        "//tensorflow/lite/experimental/litert/runtime:accelerator",
     ],
 )
 
@@ -448,11 +459,11 @@ cc_test(
     srcs = ["litert_accelerator_registration_test.cc"],
     deps = [
         ":litert_accelerator",
-        ":litert_accelerator_options",
+        ":litert_accelerator_compilation_options",
         ":litert_accelerator_registration",
         ":litert_common",
         ":litert_environment",
-        "//tensorflow/lite/experimental/litert/core:accelerator",
+        "//tensorflow/lite/experimental/litert/runtime:accelerator",
         "@com_google_googletest//:gtest_main",
     ],
 )
@@ -515,7 +526,7 @@ cc_library(
         ":litert_environment.h",
         ":litert_environment_options.h",
         ":litert_accelerator.h",
-        ":litert_accelerator_options.h",
+        ":litert_accelerator_compilation_options.h",
         ":litert_any.h",
         ":litert_common.h",
         ":litert_compiled_model.h",
@@ -530,6 +541,7 @@ cc_library(
         ":litert_tensor_buffer.h",
         ":litert_tensor_buffer_requirements.h",
         ":litert_tensor_buffer_types.h",
+        ":litert_gl_types.h",
         # Needed for litert/c/litert_op_code.h
         "//tensorflow/lite:builtin_ops.h",
         # Neeeded for litert/c/litert_model.h

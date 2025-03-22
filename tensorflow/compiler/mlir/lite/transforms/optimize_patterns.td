@@ -183,6 +183,9 @@ def ExpandTo4DForConv: NativeCodeCall<"ExpandTo4DForConv($0)">;
 def ExpandTo4DForDepthwiseConv: NativeCodeCall<
   "ExpandTo4DForDepthwiseConv($0)">;
 
+def IsScaleOfSum:
+   Constraint<CPred<"IsScaleOfSum($0, $1, $2)">>;
+
 // If we see a (div or Mul) op (dividing/multiplying) a constant value
 // to a convolution op with constant filter and bias, we can fuse the div/mul
 // into the convolution op by constant folding
@@ -1114,6 +1117,24 @@ foreach SelectOp = [TFL_SelectOp, TFL_SelectV2Op] in {
   def Optimize#SelectOp#Not : Pat<
     (SelectOp (TFL_LogicalNotOp $condition), $input1, $input2),
     (SelectOp $condition, $input2, $input1)>;
+  // select(C, true_tensor, false_tensor) -> C
+  def Optimize#SelectOp#IsNoop : Pat<
+    (SelectOp:$result $condition,
+                       (Arith_ConstantOp $input1),
+                       (Arith_ConstantOp $input2)),
+    (replaceWithValue $condition),
+    [(HaveSameType $condition, $result),
+     (AllElementsAreBool<"true"> $input1),
+     (AllElementsAreBool<"false"> $input2)]>;
+  // select(C, false_tensor, true_tensor) -> logical_not(C)
+  def Optimize#SelectOp#IsNegate : Pat<
+    (SelectOp:$result $condition,
+                       (Arith_ConstantOp $input1),
+                       (Arith_ConstantOp $input2)),
+    (TFL_LogicalNotOp $condition),
+    [(HaveSameType $condition, $result),
+     (AllElementsAreBool<"false"> $input1),
+     (AllElementsAreBool<"true"> $input2)]>;
 }
 
 def EliminateLogicalAndTrue : Pat<
@@ -1950,3 +1971,14 @@ def RealDivWithF32ConstDivisor : Pat<
       (GetScalarOfType<1> (Arith_ConstantOp $value))),
       (Arith_ConstantOp $value),  TFL_AF_None),
     $activation)>;
+
+
+// Fuse Sum -> Mul into Mean if the  RHS of Mul is a constant equals to scale 
+// where scale = 1.0 / (product of the summed dimensions that are part of the sum op).
+def FuseSumMulIntoMean: Pat<
+  (TFL_MulOp:$src
+    (TFL_SumOp:$sum $sum_input, (Arith_ConstantOp I32ElementsAttr: $axes),
+                             $keep_dims),
+    (Arith_ConstantOp FloatElementsAttr:$scale), TFL_AF_None),
+  (TFL_MeanOp $sum_input, (Arith_ConstantOp $axes), $keep_dims),
+  [(IsScaleOfSum $sum_input, $axes, $scale)]>;

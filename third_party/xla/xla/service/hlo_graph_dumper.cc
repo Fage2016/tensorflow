@@ -679,7 +679,7 @@ bool HloDotDumper::ShouldShowSubcomputation(const HloComputation* subcomp) {
     return false;
   }
 
-  if (subcomp->WhileCallInstruction() != nullptr &&
+  if (!subcomp->caller_instructions(HloOpcode::kWhile).empty() &&
       !hlo_render_options_.show_while_subcomputations) {
     return false;
   }
@@ -1488,7 +1488,7 @@ std::string HloDotDumper::GetInstructionNodeExtraInfo(
     bool shape_is_multidim = false;
     ShapeUtil::ForEachSubshape(instr->shape(),
                                [&](const Shape& s, const ShapeIndex&) {
-                                 shape_is_multidim |= s.rank() > 1;
+                                 shape_is_multidim |= s.dimensions_size() > 1;
                                });
     std::string instr_shape;
     if (instr->opcode() != HloOpcode::kTuple && shape_is_multidim) {

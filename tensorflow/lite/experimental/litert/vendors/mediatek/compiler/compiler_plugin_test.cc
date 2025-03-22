@@ -41,11 +41,7 @@ const auto kSupportedOps = Values(
     "simple_add_op.tflite");
 // clang-format on
 
-TEST(TestQnnPlugin, GetConfigInfo) {
-#ifndef __ANDROID__
-  GTEST_SKIP() << "Loading shared lib not currently supported on linux.";
-#endif  // __ANDROID__
-
+TEST(TestMediatekPlugin, GetConfigInfo) {
   EXPECT_STREQ(LiteRtGetCompilerPluginSocManufacturer(), "MediaTek");
 
   auto plugin = CreatePlugin();
@@ -63,13 +59,14 @@ TEST(TestQnnPlugin, GetConfigInfo) {
   EXPECT_STREQ(config_id, "mt6853");
 }
 
-TEST(TestQnnPlugin, PartitionAdd) {
+TEST(TestMediatekPlugin, PartitionAdd) {
   auto plugin = CreatePlugin();
   auto model = testing::LoadTestFileModel("add_simple.tflite");
 
   LiteRtOpListT selected_op_list;
-  ASSERT_EQ(LiteRtCompilerPluginPartition(
-                plugin.get(), model.Subgraph(0)->Get(), &selected_op_list),
+  ASSERT_EQ(LiteRtCompilerPluginPartition(plugin.get(), /*soc_model=*/nullptr,
+                                          model.Subgraph(0)->Get(),
+                                          &selected_op_list),
             kLiteRtStatusOk);
   const auto selected_ops = selected_op_list.Values();
 
