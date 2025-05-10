@@ -24,6 +24,7 @@ limitations under the License.
 #include <memory>
 #include <numeric>
 #include <optional>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -40,10 +41,12 @@ limitations under the License.
 #include "absl/strings/str_replace.h"
 #include "absl/strings/string_view.h"
 #include "absl/synchronization/mutex.h"
+#include "absl/synchronization/notification.h"
 #include "absl/time/clock.h"
 #include "absl/time/time.h"
 #include "absl/types/span.h"
 #include "mlir/IR/MLIRContext.h"
+#include "xla/debug_options_flags.h"
 #include "xla/ffi/ffi.h"
 #include "xla/ffi/ffi_api.h"
 #include "xla/hlo/builder/xla_computation.h"
@@ -57,7 +60,9 @@ limitations under the License.
 #include "xla/pjrt/distributed/in_memory_key_value_store.h"
 #include "xla/pjrt/gpu/gpu_topology.h"
 #include "xla/pjrt/gpu/gpu_topology.pb.h"
+#include "xla/pjrt/gpu/se_gpu_topology_description.h"
 #include "xla/pjrt/host_memory_spaces.h"
+#include "xla/pjrt/local_device_state.h"
 #include "xla/pjrt/mlir_to_hlo.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/pjrt_compiler.h"
@@ -79,22 +84,19 @@ limitations under the License.
 #include "xla/tests/literal_test_util.h"
 #include "xla/tsl/lib/core/status_test_util.h"
 #include "xla/tsl/platform/env.h"
+#include "xla/tsl/platform/status.h"
 #include "xla/tsl/platform/statusor.h"
 #include "xla/tsl/platform/subprocess.h"
+#include "xla/tsl/platform/threadpool.h"
+#include "xla/tsl/util/command_line_flags.h"
 #include "xla/types.h"
 #include "xla/util.h"
 #include "xla/xla.pb.h"
 #include "xla/xla_data.pb.h"
 #include "tsl/platform/casts.h"
-#include "tsl/platform/env.h"
-#include "tsl/platform/errors.h"
 #include "tsl/platform/mem.h"
 #include "tsl/platform/platform.h"
 #include "tsl/platform/protobuf.h"
-#include "tsl/platform/status.h"
-#include "tsl/platform/status_matchers.h"
-#include "tsl/platform/statusor.h"
-#include "tsl/platform/threadpool.h"
 
 namespace xla {
 namespace {
@@ -620,29 +622,92 @@ TEST(StreamExecutorGpuClientTest, ToLiteralAsyncWithNonCompactLayout) {
           client->addressable_devices()[0]->memory_spaces()[0]));
   auto buffer = transfer_manager->RetrieveBuffer(0);
 
-  absl::Mutex mu;
+  absl::Notification n;
   auto literal = std::make_shared<Literal>(
       ShapeUtil::DeviceShapeToHostShape(buffer->on_device_shape()));
-  bool got_literal = false;
 
   TF_ASSERT_OK(
       transfer_manager->TransferLiteralToBuffer(0, src_literal, [&]() {}));
 
   buffer->ToLiteral(literal.get()).OnReady([&](absl::Status s) {
-    absl::MutexLock l(&mu);
     TF_ASSERT_OK(s);
-    got_literal = true;
+    n.Notify();
   });
   buffer.reset();
 
-  {
-    absl::MutexLock l(&mu);
-    mu.Await(absl::Condition(&got_literal));
-  }
+  n.WaitForNotification();
 
   ASSERT_TRUE(ShapeUtil::Compatible(src_literal.shape(), literal->shape()));
   ASSERT_EQ(src_literal.data<int32_t>(),
             literal->Relayout(src_literal.shape().layout()).data<int32_t>());
+}
+
+TEST(StreamExecutorGpuClientTest, ToLiteralAsyncWithDifferentMajorToMinor) {
+  TF_ASSERT_OK_AND_ASSIGN(auto client,
+                          GetStreamExecutorGpuClient(DefaultOptions()));
+  ASSERT_GE(client->addressable_devices().size(), 1);
+
+  xla::Shape shape = xla::ShapeUtil::MakeShapeWithDenseLayout(
+      xla::S32, {2, 3}, /*minor_to_major=*/{1, 0});
+  xla::Literal src_literal = xla::LiteralUtil::CreateR2WithLayout<int32_t>(
+      {{3, 14, 25}, {36, 47, 58}}, shape.layout());
+
+  PjRtClient::ShapeSpec spec;
+  spec.element_type = src_literal.shape().element_type();
+  spec.dims = DimensionVector(src_literal.shape().dimensions().begin(),
+                              src_literal.shape().dimensions().end());
+  xla::Shape transposed_shape = xla::ShapeUtil::MakeShapeWithDenseLayout(
+      xla::S32, {2, 3}, /*minor_to_major=*/{0, 1});
+  std::vector<std::optional<xla::Layout>> device_layouts = {
+      std::make_optional(transposed_shape.layout())};
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto transfer_manager,
+      client->CreateBuffersForAsyncHostToDevice(
+          {spec}, device_layouts,
+          client->addressable_devices()[0]->memory_spaces()[0]));
+  auto buffer = transfer_manager->RetrieveBuffer(0);
+
+  absl::Notification n;
+  auto literal = std::make_shared<Literal>(shape);
+
+  TF_ASSERT_OK(
+      transfer_manager->TransferLiteralToBuffer(0, src_literal, [&]() {}));
+
+  buffer->ToLiteral(literal.get()).OnReady([&](absl::Status s) {
+    TF_ASSERT_OK(s);
+    n.Notify();
+  });
+  buffer.reset();
+
+  n.WaitForNotification();
+
+  ASSERT_TRUE(ShapeUtil::Compatible(src_literal.shape(), literal->shape()));
+  ASSERT_EQ(src_literal.data<int32_t>(),
+            literal->Relayout(src_literal.shape().layout()).data<int32_t>());
+}
+
+TEST(StreamExecutorGpuClientTest, ToLiteralAsyncToken) {
+  TF_ASSERT_OK_AND_ASSIGN(auto client,
+                          GetStreamExecutorGpuClient(DefaultOptions()));
+  ASSERT_GE(client->addressable_devices().size(), 1);
+
+  xla::Literal literal = xla::LiteralUtil::CreateToken();
+
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto buffer,
+      client->BufferFromHostLiteral(
+          literal, client->addressable_devices()[0]->memory_spaces()[0]));
+  TF_ASSERT_OK(buffer->GetReadyFuture().Await());
+
+  absl::Notification n;
+
+  buffer->ToLiteral(&literal).OnReady([&](absl::Status s) {
+    TF_ASSERT_OK(s);
+    n.Notify();
+  });
+  buffer.reset();
+
+  n.WaitForNotification();
 }
 
 TEST(StreamExecutorGpuClientTest, ToLiteralAsyncBeforeBufferReady) {
@@ -1918,6 +1983,41 @@ TEST(StreamExecutorGpuClientTest, MlirAutoParameterLayoutIsSet) {
   EXPECT_EQ(first_param_layout, Layout({1, 2, 0}));
 }
 
+TEST(StreamExecutorGpuClientTest, ValidatesClientName) {
+  TF_ASSERT_OK_AND_ASSIGN(auto client,
+                          GetStreamExecutorGpuClient(GpuClientOptions()));
+
+  static constexpr char const* kAddProgram =
+      R"(
+HloModule Add.6, entry_computation_layout={(f32[], f32[])->(f32[], f32[])}
+
+ENTRY %Add.6 (a.1: f32[], b.2: f32[]) -> (f32[], f32[]) {
+  %a.1 = f32[] parameter(0)
+  %b.2 = f32[] parameter(1)
+  %add.3 = f32[] add(f32[] %a.1, f32[] %b.2)
+  %add.4 = f32[] add(f32[] %add.3, f32[] %add.3)
+  ROOT %tuple.5 = (f32[], f32[]) tuple(f32[] %add.3, f32[] %add.4)
+}
+)";
+  TF_ASSERT_OK_AND_ASSIGN(auto executable,
+                          CompileExecutable(kAddProgram, *client));
+  auto gpu_exe = static_cast<PjRtStreamExecutorLoadedExecutable*>(
+      std::move(executable).get());
+  TF_ASSERT_OK_AND_ASSIGN(std::string serialized,
+                          gpu_exe->SerializeExecutable());
+
+  ExecutableAndOptionsProto proto;
+  proto.ParseFromString(serialized);
+  EXPECT_EQ(proto.pjrt_client_name(), "PjRtStreamExecutorClient");
+  proto.set_pjrt_client_name("SomeGpuClient");
+  serialized = proto.SerializeAsString();
+
+  EXPECT_THAT(client->DeserializeExecutable(serialized, std::nullopt),
+              StatusIs(absl::StatusCode::kInternal,
+                       HasSubstr("PjRt client type expected by the serialized "
+                                 "executable: SomeGpuClient")));
+}
+
 TEST(StreamExecutorGpuClientTest, MlirParameterLayoutIsSetInHlo) {
   constexpr char kMlirWithParameterLayout[] =
       R"(
@@ -2089,6 +2189,10 @@ TEST(StreamExecutorGpuClientTest, AutoLayoutIsSupported) {
 
 // Same test as SendRecvChunked, but check non-zero GPU device time measurement.
 TEST(StreamExecutorGpuClientTest, NonZeroGPUDeviceTimeMeasurementSingleGPU) {
+  if (tsl::kIsOpenSource) {
+    GTEST_SKIP()
+        << "DeviceTimeMeasurement implementation isn't available in OSS.";
+  }
   TF_ASSERT_OK_AND_ASSIGN(auto client,
                           GetStreamExecutorGpuClient(DefaultOptions()));
 
@@ -2150,6 +2254,10 @@ TEST(StreamExecutorGpuClientTest, NonZeroGPUDeviceTimeMeasurementSingleGPU) {
 // Same test as MockNcclClientWithGpuTopologyExecuteTest, but check non-zero
 // GPU device time measurement.
 TEST(StreamExecutorGpuClientTest, NonZeroGPUDeviceTimeMeasurementMultiGPU) {
+  if (tsl::kIsOpenSource) {
+    GTEST_SKIP()
+        << "DeviceTimeMeasurement implementation isn't available in OSS.";
+  }
   GpuClientOptions client_options;
   client_options.enable_mock_nccl = true;
   client_options.num_nodes = 4;
@@ -2521,7 +2629,7 @@ int main(int argc, char* argv[]) {
         node_id, num_active_nodes, num_nodes_using_cache, cache_dir,
         use_xla_computation);
     if (!result.ok()) {
-      LOG(ERROR) << result.ToString();
+      LOG(ERROR) << result;
     }
     return result.raw_code();
   }

@@ -989,6 +989,7 @@ xla_test(
         "//xla/stream_executor:platform_manager",
         "//xla/stream_executor:stream",
         "//xla/stream_executor:typed_kernel_factory",
+        "//xla/stream_executor/gpu:gpu_test_kernels",
         "//xla/tsl/platform:status_matchers",
         "//xla/tsl/platform:statusor",
         "//xla/tsl/platform:test",
@@ -1186,7 +1187,9 @@ rocm_library(
 rocm_library(
     name = "topk_kernel_rocm",
     srcs = [
-        "topk_kernel_rocm.cu.cc",
+        "topk_kernel_rocm_bfloat16.cu.cc",
+        "topk_kernel_rocm_common.cu.h",
+        "topk_kernel_rocm_float.cu.cc",
     ],
     # copybara:uncomment compatible_with = ["//buildenv/target:non_prod"],
     tags = [

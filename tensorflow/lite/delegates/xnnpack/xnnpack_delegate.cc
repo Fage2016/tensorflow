@@ -146,13 +146,8 @@ bool CheckAffineQuantization(
                        TfLiteTypeGetName(tensor.type), t);
     return false;
   }
-  return true;
-}
-
-bool CheckFp32Scale(TfLiteContext* context, const TfLiteTensor& tensor, int t,
-                    const TfLiteFloatArray& quantization_scale) {
-  for (int i = 0; i < quantization_scale.size; i++) {
-    const float scale = quantization_scale.data[i];
+  for (int i = 0; i < quantization_params.scale->size; i++) {
+    const float scale = quantization_params.scale->data[i];
     if (!std::isnormal(scale) || scale <= 0.0f) {
       TF_LITE_KERNEL_LOG(context,
                          "unsupported scale value (%f) in channel %d for "
@@ -237,10 +232,6 @@ xnn_datatype GetXNNPackDatatype(TfLiteContext* context,
       // Checking if quantization_params->zero_point->size != 1 is redundant,
       // CheckAffineQuantization already checks if it is the same as
       // quantization_params->scale->size.
-
-      if (!CheckFp32Scale(context, tensor, t, *(quantization_params->scale))) {
-        return xnn_datatype_invalid;
-      }
       if (!CheckZeroPointForPerTensorQuantization<uint8_t>(
               context, tensor, t, *(quantization_params->zero_point))) {
         return xnn_datatype_invalid;
@@ -267,9 +258,6 @@ xnn_datatype GetXNNPackDatatype(TfLiteContext* context,
           }
           const auto quantization_scale = quantization_params->scale;
           const auto quantization_zero_point = quantization_params->zero_point;
-          if (!CheckFp32Scale(context, tensor, t, *quantization_scale)) {
-            return xnn_datatype_invalid;
-          }
           if (quantization_scale->size == 1 && tensor.type == kTfLiteInt8) {
             // Per-tensor quantization
             if (!CheckZeroPointForPerTensorQuantization<int8_t>(
@@ -611,17 +599,17 @@ class Delegate {
 
   bool support_variable_ops() const {
     if (options_.flags & TFLITE_XNNPACK_DELEGATE_FLAG_VARIABLE_OPERATORS) {
-      return true;
+      TFLITE_LOG_PROD_ONCE(tflite::TFLITE_LOG_ERROR,
+                           "Variable ops support is enabled by default, "
+                           "TFLITE_XNNPACK_DELEGATE_FLAG_VARIABLE_OPERATORS is "
+                           "deprecated and will be removed in the future.");
     } else if (options_.handle_variable_ops) {
-      TFLITE_LOG_PROD_ONCE(
-          tflite::TFLITE_LOG_ERROR,
-          "TfLiteXNNPackDelegateOptions::handle_variable_ops "
-          "is deprecated and will be removed in the future. "
-          "Use TfLiteXNNPackDelegateOptions::flags with "
-          "TFLITE_XNNPACK_DELEGATE_FLAG_VARIABLE_OPERATORS mask");
-      return true;
+      TFLITE_LOG_PROD_ONCE(tflite::TFLITE_LOG_ERROR,
+                           "Variable ops support is enabled by default, "
+                           "TfLiteXNNPackDelegateOptions::handle_variable_ops "
+                           "is deprecated and will be removed in the future.");
     }
-    return false;
+    return true;
   }
 
   bool transient_indirection_buffer() const {
@@ -741,20 +729,30 @@ class Delegate {
       var_handles_;
 };
 
-// This is basically an implementation of invoke for VarHandle that also returns
-// the resource_id. We can't use that implementation because:
-// - It writes its output to the output tensor, which may not exist if that
-// tensor is fully delegated (along with this VarHandle op).
-// - There's a circular dependency if we try to depend on "builtin_op_kernels".
+// Prepare/invoke for VarHandle that also returns the resource_id. We can't use
+// the tensorflow/lite/kernels/var_handle.cc implementation because there's a
+// circular dependency if we try to depend on "builtin_op_kernels".
+TfLiteStatus PrepareVarHandle(TfLiteContext* context, const TfLiteNode* node) {
+  TfLiteTensor* output;
+  TF_LITE_ENSURE_OK(context, GetOutputSafe(context, node, 0, &output));
+
+  output->allocation_type = kTfLiteArenaRwPersistent;
+  const int kBytesRequired = sizeof(int32_t);
+  TfLiteTensorRealloc(kBytesRequired, output);
+  output->bytes = kBytesRequired;
+
+  return kTfLiteOk;
+}
+
 TfLiteStatus InvokeVarHandle(TfLiteContext* context,
                              const TfLiteNode* var_handle, int& resource_id) {
   // This is struct VarParams { int resource_id; };
-  const int* op_data = static_cast<const int*>(var_handle->user_data);
+  const int32_t* op_data = static_cast<const int32_t*>(var_handle->user_data);
   TF_LITE_ENSURE(context, op_data != nullptr);
   resource_id = *op_data;
 
   TfLiteTensor& output = context->tensors[var_handle->outputs->data[0]];
-  if (int* output_data = GetTensorData<int>(&output)) {
+  if (int32_t* output_data = GetTensorData<int32_t>(&output)) {
     // If we delegate the VarHandle op, but the result is an output of
     // the delegated subgraph, we need to implement the op.
     *output_data = resource_id;
@@ -838,6 +836,8 @@ class Subgraph {
         case kTfLiteBuiltinExpandDims:
         case kTfLiteBuiltinMean:
         case kTfLiteBuiltinPad:
+        case kTfLiteBuiltinReduceMax:
+        case kTfLiteBuiltinReduceMin:
         case kTfLiteBuiltinSum:
         case kTfLiteBuiltinReshape:
         case kTfLiteBuiltinResizeBilinear:
@@ -1215,6 +1215,18 @@ class Subgraph {
         }
       }
     }
+
+    // Prepare any VarHandle ops we delegated.
+    for (std::pair<const int, void*>& io_info : externals_) {
+      const auto& resource_it = resources_.find(io_info.first);
+      if (resource_it != resources_.end()) {
+        const TfLiteNode* var_handle = resource_it->second.GetVarHandle();
+        if (var_handle) {
+          TF_LITE_ENSURE_STATUS(PrepareVarHandle(context, var_handle));
+        }
+      }
+    }
+
     return kTfLiteOk;
   }
 
@@ -2189,6 +2201,20 @@ class Subgraph {
                     quantization_params->quantized_dimension, tensor_index,
                     node_index);
                 return kTfLiteError;
+              } else if (tensor.type == kTfLiteInt4 &&
+                         quantization_params->scale->size !=
+                             SizeOfDimension(
+                                 &tensor,
+                                 quantization_params->quantized_dimension)) {
+                // Only per channel quantized 4 bit weights are supported.
+                TF_LITE_MAYBE_KERNEL_LOG(
+                    context,
+                    "4 bit weights must be per channel and not per tensor "
+                    "quantized in channel #%" PRId32
+                    " in tensor #%d in node #%d",
+                    quantization_params->quantized_dimension, tensor_index,
+                    node_index);
+                return kTfLiteError;
               }
               break;
             }
@@ -2841,7 +2867,22 @@ class Subgraph {
                                   node_index, node, context->tensors,
                                   pool_params, input_output_tensors);
       }
-
+      case kTfLiteBuiltinReduceMin: {
+        const TfLiteReducerParams* reducer_params =
+            static_cast<const TfLiteReducerParams*>(node->builtin_data);
+        return VisitReduceNode(BuiltinOperator_MIN, xnn_reduce_min, subgraph,
+                               delegate, logging_context, node_index, node,
+                               context->tensors, reducer_params,
+                               input_output_tensors);
+      }
+      case kTfLiteBuiltinReduceMax: {
+        const TfLiteReducerParams* reducer_params =
+            static_cast<const TfLiteReducerParams*>(node->builtin_data);
+        return VisitReduceNode(BuiltinOperator_MAX, xnn_reduce_max, subgraph,
+                               delegate, logging_context, node_index, node,
+                               context->tensors, reducer_params,
+                               input_output_tensors);
+      }
       case kTfLiteBuiltinSum: {
         const TfLiteReducerParams* reducer_params =
             static_cast<const TfLiteReducerParams*>(node->builtin_data);
@@ -6436,8 +6477,7 @@ class Subgraph {
   static TfLiteStatus VisitVarHandleNode(xnn_subgraph_t subgraph,
                                          Delegate& delegate,
                                          TfLiteContext* logging_context,
-                                         int node_index,
-                                         const TfLiteNode* node) {
+                                         int node_index, TfLiteNode* node) {
     if (!delegate.support_variable_ops()) {
       return kTfLiteError;
     }

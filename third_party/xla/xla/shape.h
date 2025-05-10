@@ -102,8 +102,6 @@ class Shape {
 
   // Returns a ShapeProto representation of the Shape.
   ShapeProto ToProto() const;
-  // Sets a ShapeProto to the representation of the Shape.
-  void SetProto(ShapeProto& proto) const;
 
   // Prints a human-readable string that represents the given shape, with or
   // without layout. e.g. "F32[42,12] {0, 1}" or "F32[64]".
@@ -402,10 +400,6 @@ class Shape {
   // Resets this to the default state (an invalid shape).
   void Clear();
 
-  std::string SerializeAsString() const {
-    return ToProto().SerializeAsString();
-  }
-  std::string ShortDebugString() const { return ToProto().ShortDebugString(); }
   std::string DebugString() const { return ToProto().DebugString(); }
 
   // Equal is a configurable functor to check the equality of two shapes.
@@ -606,26 +600,10 @@ class Shape {
     CHECK(state) << "Expected an opaque shape. Got " << ToString();
     return *state;
   }
-  const ArrayState& array_state() const {
-    const auto* const state = if_array_state();
-    CHECK(state) << "Expected an array shape. Got " << ToString();
-    return *state;
-  }
-  ArrayState& array_state() {
-    auto* const state = if_array_state();
-    CHECK(state) << "Expected an array shape. Got " << ToString();
-    return *state;
-  }
-  const TupleState& tuple_state() const {
-    const auto* const state = if_tuple_state();
-    CHECK(state) << "Expected a tuple shape. Got " << ToString();
-    return *state;
-  }
-  TupleState& tuple_state() {
-    auto* const state = if_tuple_state();
-    CHECK(state) << "Expected a tuple shape. Got " << ToString();
-    return *state;
-  }
+  const ArrayState& array_state() const;
+  ArrayState& array_state();
+  const TupleState& tuple_state() const;
+  TupleState& tuple_state();
 
   // CHECK-fails if this shape's state is not empty.
   void CheckStateIsEmpty() const;
@@ -697,9 +675,6 @@ class ProgramShape {
   const std::vector<std::string>& parameter_names() const {
     return parameter_names_;
   }
-
-  std::string ShortDebugString() const { return ToProto().ShortDebugString(); }
-  std::string DebugString() const { return ToProto().DebugString(); }
 
  private:
   // Invariant: parameters_ and parameter_names_ have the same size.
