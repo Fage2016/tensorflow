@@ -69,18 +69,26 @@ TEST(PjRtLayoutTest, ByteSize) {
                                      xla::LayoutUtil::MakeDescendingLayout(2)))
                   ->ByteSize(DType(DType::kS32), Shape({3, 2})),
               IsOkAndHolds(Optional(24)));
-  EXPECT_THAT(PjRtLayout::Create(std::make_unique<xla::PjRtLayout>(xla::Layout(
-                                     /*minor_to_major=*/{1, 0},
-                                     /*tiles=*/{xla::Tile({2, 128})},
-                                     /*element_size_in_bits=*/32)))
-                  ->ByteSize(DType(DType::kS32), Shape({1, 127})),
-              IsOkAndHolds(Optional(4 * (2 * 128))));
-  EXPECT_THAT(PjRtLayout::Create(std::make_unique<xla::PjRtLayout>(xla::Layout(
-                                     /*minor_to_major=*/{1, 0},
-                                     /*tiles=*/{xla::Tile({2, 1024})},
-                                     /*element_size_in_bits=*/4)))
-                  ->ByteSize(DType(DType::kS4), Shape({1, 1023})),
-              IsOkAndHolds(Optional((2 * 1024) / 2)));
+  EXPECT_THAT(
+      PjRtLayout::Create(std::make_unique<xla::PjRtLayout>(xla::Layout(
+                             /*minor_to_major=*/{1, 0},
+                             /*tiles=*/{xla::Tile({2, 128})},
+                             /*index_primitive_type=*/PRIMITIVE_TYPE_INVALID,
+                             /*element_primitive_type=*/PRIMITIVE_TYPE_INVALID,
+                             /*tail_padding_alignment_in_elements=*/1,
+                             /*element_size_in_bits=*/32)))
+          ->ByteSize(DType(DType::kS32), Shape({1, 127})),
+      IsOkAndHolds(Optional(4 * (2 * 128))));
+  EXPECT_THAT(
+      PjRtLayout::Create(std::make_unique<xla::PjRtLayout>(xla::Layout(
+                             /*minor_to_major=*/{1, 0},
+                             /*tiles=*/{xla::Tile({2, 1024})},
+                             /*index_primitive_type=*/PRIMITIVE_TYPE_INVALID,
+                             /*element_primitive_type=*/PRIMITIVE_TYPE_INVALID,
+                             /*tail_padding_alignment_in_elements=*/1,
+                             /*element_size_in_bits=*/4)))
+          ->ByteSize(DType(DType::kS4), Shape({1, 1023})),
+      IsOkAndHolds(Optional((2 * 1024) / 2)));
 }
 
 TEST(PjRtLayoutTest, ToPjRtLayout) {
@@ -102,18 +110,17 @@ TEST(PjRtLayoutTest, ToPjRtLayout) {
   {
     auto client = std::make_shared<MockClient>();
     auto device = std::make_unique<MockDevice>();
+    Shape shape({3, 2});
     ON_CALL(*device, client).WillByDefault(Return(client.get()));
     EXPECT_CALL(*client, GetDefaultLayout)
-        .With(std::tuple<DType, absl::Span<const int64_t>, Device*, MemoryKind>(
-            DType(DType::kS32), Shape({3, 2}).dims(), device.get(),
-            MemoryKind()))
+        .With(std::make_tuple(DType(DType::kS32), shape.dims(),
+                              static_cast<Device*>(device.get()), MemoryKind()))
         .WillOnce(Return(absl::StatusOr<std::shared_ptr<const xla::PjRtLayout>>(
             std::make_shared<xla::PjRtLayout>(
                 xla::LayoutUtil::MakeDescendingLayout(2)))));
     TF_ASSERT_OK_AND_ASSIGN(
-        auto layout,
-        ToPjRtLayout(DType(DType::kS32), Shape({3, 2}), device.get(),
-                     MemoryKind(), /*layout=*/nullptr));
+        auto layout, ToPjRtLayout(DType(DType::kS32), shape, device.get(),
+                                  MemoryKind(), /*layout=*/nullptr));
     EXPECT_EQ(layout->xla_layout(), xla::LayoutUtil::MakeDescendingLayout(2));
   }
   {

@@ -311,6 +311,7 @@ cc_library(
     srcs = ["blas.cc"],
     hdrs = ["blas.h"],
     deps = [
+        ":blas_proto_cc",
         ":data_type",
         ":device_memory",
         ":numeric_options",
@@ -362,9 +363,6 @@ cc_library(
 tf_proto_library(
     name = "blas_proto",
     srcs = ["blas.proto"],
-    protodeps = [
-        "//xla:xla_data_proto",
-    ],
 )
 
 cc_library(
