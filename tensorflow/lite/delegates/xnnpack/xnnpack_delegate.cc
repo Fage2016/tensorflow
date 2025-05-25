@@ -40,6 +40,7 @@ limitations under the License.
 #include "pthreadpool.h"  // from @pthreadpool
 #include "tensorflow/compiler/mlir/lite/kernels/internal/compatibility_macros.h"
 #include "tensorflow/compiler/mlir/lite/tools/optimize/reduced_precision_metadata.h"
+#include "tensorflow/lite/array.h"
 #include "tensorflow/lite/builtin_ops.h"
 #include "tensorflow/lite/c/builtin_op_data.h"
 #include "tensorflow/lite/c/c_api_types.h"
@@ -146,13 +147,8 @@ bool CheckAffineQuantization(
                        TfLiteTypeGetName(tensor.type), t);
     return false;
   }
-  return true;
-}
-
-bool CheckFp32Scale(TfLiteContext* context, const TfLiteTensor& tensor, int t,
-                    const TfLiteFloatArray& quantization_scale) {
-  for (int i = 0; i < quantization_scale.size; i++) {
-    const float scale = quantization_scale.data[i];
+  for (int i = 0; i < quantization_params.scale->size; i++) {
+    const float scale = quantization_params.scale->data[i];
     if (!std::isnormal(scale) || scale <= 0.0f) {
       TF_LITE_KERNEL_LOG(context,
                          "unsupported scale value (%f) in channel %d for "
@@ -237,10 +233,6 @@ xnn_datatype GetXNNPackDatatype(TfLiteContext* context,
       // Checking if quantization_params->zero_point->size != 1 is redundant,
       // CheckAffineQuantization already checks if it is the same as
       // quantization_params->scale->size.
-
-      if (!CheckFp32Scale(context, tensor, t, *(quantization_params->scale))) {
-        return xnn_datatype_invalid;
-      }
       if (!CheckZeroPointForPerTensorQuantization<uint8_t>(
               context, tensor, t, *(quantization_params->zero_point))) {
         return xnn_datatype_invalid;
@@ -267,9 +259,6 @@ xnn_datatype GetXNNPackDatatype(TfLiteContext* context,
           }
           const auto quantization_scale = quantization_params->scale;
           const auto quantization_zero_point = quantization_params->zero_point;
-          if (!CheckFp32Scale(context, tensor, t, *quantization_scale)) {
-            return xnn_datatype_invalid;
-          }
           if (quantization_scale->size == 1 && tensor.type == kTfLiteInt8) {
             // Per-tensor quantization
             if (!CheckZeroPointForPerTensorQuantization<int8_t>(
@@ -480,6 +469,75 @@ class ResourceInfo {
   uint32_t value_flags_ = 0;
 };
 
+TfLiteStatus DefineXNNPACKValue(TfLiteContext* context, xnn_subgraph_t subgraph,
+                                const TfLiteTensor& tensor, int tensor_index,
+                                const void* data, uint32_t flags,
+                                uint32_t* xnnpack_id) {
+  const xnn_datatype datatype =
+      GetXNNPackDatatype(context, tensor, tensor_index);
+  if (datatype == xnn_datatype_invalid) {
+    TF_LITE_KERNEL_LOG(
+        context, "unsupported datatype (%s) of tensor %d in XNNPACK delegate",
+        TfLiteTypeGetName(tensor.type), tensor_index);
+    return kTfLiteError;
+  }
+
+  std::vector<size_t> dims(&tensor.dims->data[0],
+                           &tensor.dims->data[NumDimensions(&tensor)]);
+
+  xnn_status status = xnn_status_success;
+  switch (datatype) {
+    case xnn_datatype_qint8:
+    case xnn_datatype_quint8:
+    case xnn_datatype_qint32:
+      status = xnn_define_quantized_tensor_value(
+          subgraph, datatype,
+          static_cast<const TfLiteAffineQuantization*>(
+              tensor.quantization.params)
+              ->zero_point->data[0],
+          static_cast<const TfLiteAffineQuantization*>(
+              tensor.quantization.params)
+              ->scale->data[0],
+          dims.size(), dims.data(), data, XNN_INVALID_VALUE_ID, flags,
+          xnnpack_id);
+      break;
+    case xnn_datatype_qcint4:
+    case xnn_datatype_qcint8:
+    case xnn_datatype_qcint32:
+      status = xnn_define_channelwise_quantized_tensor_value(
+          subgraph, datatype,
+          static_cast<const TfLiteAffineQuantization*>(
+              tensor.quantization.params)
+              ->scale->data,
+          dims.size(),
+          static_cast<const TfLiteAffineQuantization*>(
+              tensor.quantization.params)
+              ->quantized_dimension,
+          dims.data(), data, XNN_INVALID_VALUE_ID, flags, xnnpack_id);
+      break;
+    case xnn_datatype_qbint4: {
+      const auto* quantization_params =
+          reinterpret_cast<const TfLiteBlockwiseQuantization*>(
+              tensor.quantization.params);
+      const TfLiteTensor& scale_tensor =
+          context->tensors[quantization_params->scale];
+      status = xnn_define_blockwise_quantized_tensor_value_v2(
+          subgraph, datatype, 0,
+          reinterpret_cast<const uint16_t*>(scale_tensor.data.data),
+          dims.size(), quantization_params->quantized_dimension,
+          quantization_params->blocksize, dims.data(), data,
+          XNN_INVALID_VALUE_ID, flags, xnn_datatype_fp16, xnnpack_id);
+      break;
+    }
+    default:
+      status = xnn_define_tensor_value(subgraph, datatype, dims.size(),
+                                       dims.data(), data, XNN_INVALID_VALUE_ID,
+                                       flags, xnnpack_id);
+      break;
+  }
+  return kTfLiteOk;
+}
+
 class Subgraph;
 
 class Delegate {
@@ -533,9 +591,17 @@ class Delegate {
 
     // If no weight cache is provided, add one when requested.
     if (!options_.weights_cache) {
-      if (options_.weight_cache_file_path) {
-        if (weight_cache_provider_.LoadOrStartBuild(
-                options_.weight_cache_file_path)) {
+      if (options_.weight_cache_file_path ||
+          options_.weight_cache_file_descriptor > 0) {
+        const char* const file_path = options_.weight_cache_file_path
+                                          ? options_.weight_cache_file_path
+                                          : "unknown path";
+        // See TfLiteXNNPackDelegateOptions::weight_cache_file_descriptor
+        // comment for > 0 check.
+        FileDescriptor fd(options_.weight_cache_file_descriptor > 0
+                              ? options_.weight_cache_file_descriptor
+                              : -1);
+        if (weight_cache_provider_.LoadOrStartBuild(file_path, std::move(fd))) {
           options_.weights_cache =
               reinterpret_cast<TfLiteXNNPackDelegateWeightsCache*>(
                   weight_cache_provider_.GetCacheProvider().context);
@@ -611,17 +677,17 @@ class Delegate {
 
   bool support_variable_ops() const {
     if (options_.flags & TFLITE_XNNPACK_DELEGATE_FLAG_VARIABLE_OPERATORS) {
-      return true;
+      TFLITE_LOG_PROD_ONCE(tflite::TFLITE_LOG_ERROR,
+                           "Variable ops support is enabled by default, "
+                           "TFLITE_XNNPACK_DELEGATE_FLAG_VARIABLE_OPERATORS is "
+                           "deprecated and will be removed in the future.");
     } else if (options_.handle_variable_ops) {
-      TFLITE_LOG_PROD_ONCE(
-          tflite::TFLITE_LOG_ERROR,
-          "TfLiteXNNPackDelegateOptions::handle_variable_ops "
-          "is deprecated and will be removed in the future. "
-          "Use TfLiteXNNPackDelegateOptions::flags with "
-          "TFLITE_XNNPACK_DELEGATE_FLAG_VARIABLE_OPERATORS mask");
-      return true;
+      TFLITE_LOG_PROD_ONCE(tflite::TFLITE_LOG_ERROR,
+                           "Variable ops support is enabled by default, "
+                           "TfLiteXNNPackDelegateOptions::handle_variable_ops "
+                           "is deprecated and will be removed in the future.");
     }
-    return false;
+    return true;
   }
 
   bool transient_indirection_buffer() const {
@@ -741,20 +807,30 @@ class Delegate {
       var_handles_;
 };
 
-// This is basically an implementation of invoke for VarHandle that also returns
-// the resource_id. We can't use that implementation because:
-// - It writes its output to the output tensor, which may not exist if that
-// tensor is fully delegated (along with this VarHandle op).
-// - There's a circular dependency if we try to depend on "builtin_op_kernels".
+// Prepare/invoke for VarHandle that also returns the resource_id. We can't use
+// the tensorflow/lite/kernels/var_handle.cc implementation because there's a
+// circular dependency if we try to depend on "builtin_op_kernels".
+TfLiteStatus PrepareVarHandle(TfLiteContext* context, const TfLiteNode* node) {
+  TfLiteTensor* output;
+  TF_LITE_ENSURE_OK(context, GetOutputSafe(context, node, 0, &output));
+
+  output->allocation_type = kTfLiteArenaRwPersistent;
+  const int kBytesRequired = sizeof(int32_t);
+  TfLiteTensorRealloc(kBytesRequired, output);
+  output->bytes = kBytesRequired;
+
+  return kTfLiteOk;
+}
+
 TfLiteStatus InvokeVarHandle(TfLiteContext* context,
                              const TfLiteNode* var_handle, int& resource_id) {
   // This is struct VarParams { int resource_id; };
-  const int* op_data = static_cast<const int*>(var_handle->user_data);
+  const int32_t* op_data = static_cast<const int32_t*>(var_handle->user_data);
   TF_LITE_ENSURE(context, op_data != nullptr);
   resource_id = *op_data;
 
   TfLiteTensor& output = context->tensors[var_handle->outputs->data[0]];
-  if (int* output_data = GetTensorData<int>(&output)) {
+  if (int32_t* output_data = GetTensorData<int32_t>(&output)) {
     // If we delegate the VarHandle op, but the result is an output of
     // the delegated subgraph, we need to implement the op.
     *output_data = resource_id;
@@ -838,6 +914,8 @@ class Subgraph {
         case kTfLiteBuiltinExpandDims:
         case kTfLiteBuiltinMean:
         case kTfLiteBuiltinPad:
+        case kTfLiteBuiltinReduceMax:
+        case kTfLiteBuiltinReduceMin:
         case kTfLiteBuiltinSum:
         case kTfLiteBuiltinReshape:
         case kTfLiteBuiltinResizeBilinear:
@@ -994,61 +1072,9 @@ class Subgraph {
         external_outputs.push_back(t);
       }
 
-      std::vector<size_t> dims(&tensor->dims->data[0],
-                               &tensor->dims->data[NumDimensions(tensor)]);
-
-      xnn_status status = xnn_status_success;
       uint32_t xnnpack_id = XNN_INVALID_VALUE_ID;
-      switch (datatype) {
-        case xnn_datatype_qint8:
-        case xnn_datatype_quint8:
-        case xnn_datatype_qint32:
-          status = xnn_define_quantized_tensor_value(
-              subgraph.get(), datatype,
-              static_cast<const TfLiteAffineQuantization*>(
-                  tensor->quantization.params)
-                  ->zero_point->data[0],
-              static_cast<const TfLiteAffineQuantization*>(
-                  tensor->quantization.params)
-                  ->scale->data[0],
-              dims.size(), dims.data(), data, XNN_INVALID_VALUE_ID, flags,
-              &xnnpack_id);
-          break;
-        case xnn_datatype_qcint4:
-        case xnn_datatype_qcint8:
-        case xnn_datatype_qcint32:
-          status = xnn_define_channelwise_quantized_tensor_value(
-              subgraph.get(), datatype,
-              static_cast<const TfLiteAffineQuantization*>(
-                  tensor->quantization.params)
-                  ->scale->data,
-              dims.size(),
-              static_cast<const TfLiteAffineQuantization*>(
-                  tensor->quantization.params)
-                  ->quantized_dimension,
-              dims.data(), data, XNN_INVALID_VALUE_ID, flags, &xnnpack_id);
-          break;
-        case xnn_datatype_qbint4: {
-          const auto* quantization_params =
-              reinterpret_cast<const TfLiteBlockwiseQuantization*>(
-                  tensor->quantization.params);
-          const TfLiteTensor& scale_tensor =
-              context->tensors[quantization_params->scale];
-          status = xnn_define_blockwise_quantized_tensor_value_v2(
-              subgraph.get(), datatype, 0,
-              reinterpret_cast<const uint16_t*>(scale_tensor.data.data),
-              dims.size(), quantization_params->quantized_dimension,
-              quantization_params->blocksize, dims.data(), data,
-              XNN_INVALID_VALUE_ID, flags, xnn_datatype_fp16, &xnnpack_id);
-          break;
-        }
-        default:
-          status = xnn_define_tensor_value(
-              subgraph.get(), datatype, dims.size(), dims.data(), data,
-              XNN_INVALID_VALUE_ID, flags, &xnnpack_id);
-          break;
-      }
-      if (status != xnn_status_success) {
+      if (DefineXNNPACKValue(context, subgraph.get(), *tensor, t, data, flags,
+                             &xnnpack_id) != kTfLiteOk) {
         TF_LITE_KERNEL_LOG(context,
                            "failed to create XNNPACK Value for tensor %d", t);
         return nullptr;
@@ -1215,6 +1241,18 @@ class Subgraph {
         }
       }
     }
+
+    // Prepare any VarHandle ops we delegated.
+    for (std::pair<const int, void*>& io_info : externals_) {
+      const auto& resource_it = resources_.find(io_info.first);
+      if (resource_it != resources_.end()) {
+        const TfLiteNode* var_handle = resource_it->second.GetVarHandle();
+        if (var_handle) {
+          TF_LITE_ENSURE_STATUS(PrepareVarHandle(context, var_handle));
+        }
+      }
+    }
+
     return kTfLiteOk;
   }
 
@@ -2189,6 +2227,20 @@ class Subgraph {
                     quantization_params->quantized_dimension, tensor_index,
                     node_index);
                 return kTfLiteError;
+              } else if (tensor.type == kTfLiteInt4 &&
+                         quantization_params->scale->size !=
+                             SizeOfDimension(
+                                 &tensor,
+                                 quantization_params->quantized_dimension)) {
+                // Only per channel quantized 4 bit weights are supported.
+                TF_LITE_MAYBE_KERNEL_LOG(
+                    context,
+                    "4 bit weights must be per channel and not per tensor "
+                    "quantized in channel #%" PRId32
+                    " in tensor #%d in node #%d",
+                    quantization_params->quantized_dimension, tensor_index,
+                    node_index);
+                return kTfLiteError;
               }
               break;
             }
@@ -2841,7 +2893,22 @@ class Subgraph {
                                   node_index, node, context->tensors,
                                   pool_params, input_output_tensors);
       }
-
+      case kTfLiteBuiltinReduceMin: {
+        const TfLiteReducerParams* reducer_params =
+            static_cast<const TfLiteReducerParams*>(node->builtin_data);
+        return VisitReduceNode(BuiltinOperator_MIN, xnn_reduce_min, subgraph,
+                               delegate, logging_context, node_index, node,
+                               context->tensors, reducer_params,
+                               input_output_tensors);
+      }
+      case kTfLiteBuiltinReduceMax: {
+        const TfLiteReducerParams* reducer_params =
+            static_cast<const TfLiteReducerParams*>(node->builtin_data);
+        return VisitReduceNode(BuiltinOperator_MAX, xnn_reduce_max, subgraph,
+                               delegate, logging_context, node_index, node,
+                               context->tensors, reducer_params,
+                               input_output_tensors);
+      }
       case kTfLiteBuiltinSum: {
         const TfLiteReducerParams* reducer_params =
             static_cast<const TfLiteReducerParams*>(node->builtin_data);
@@ -4334,7 +4401,8 @@ class Subgraph {
         CheckNumInputsAndOutputs(logging_context, node, 2, 3, 1,
                                  BuiltinOperator_FULLY_CONNECTED, node_index));
 
-    const TfLiteTensor& input_tensor = tensors[node->inputs->data[0]];
+    const int input_tensor_id = node->inputs->data[0];
+    const TfLiteTensor& input_tensor = tensors[input_tensor_id];
     TF_LITE_ENSURE_STATUS(
         CheckTensorFloat32OrQUInt8Type(delegate, logging_context, input_tensor,
                                        node->inputs->data[0], node_index));
@@ -4428,6 +4496,33 @@ class Subgraph {
 
     uint32_t dq_quantized_id = XNN_INVALID_VALUE_ID;
     if (subgraph != nullptr) {
+      uint32_t input_value_id = input_output_tensors.at(node->inputs->data[0]);
+      if (!fc_params->keep_num_dims) {
+        // We need to reshape the input to be 2D.
+        TfLiteTensor reshaped_tensor = input_tensor;
+        auto reshaped_tflite_dims = BuildTfLiteArray<int>({0, input_channels});
+        reshaped_tensor.dims = reshaped_tflite_dims.get();
+        uint32_t reshaped_id = XNN_INVALID_VALUE_ID;
+        TF_LITE_ENSURE_STATUS(
+            DefineXNNPACKValue(logging_context, subgraph, reshaped_tensor,
+                               input_tensor_id, nullptr, 0, &reshaped_id));
+
+        const size_t reshaped_dims[2] = {0,
+                                         static_cast<size_t>(input_channels)};
+        xnn_status status =
+            xnn_define_static_reshape(subgraph, 2, reshaped_dims,
+                                      /*input_id=*/input_value_id,
+                                      /*output_id=*/reshaped_id,
+                                      /*flags=*/0);
+        if (status != xnn_status_success) {
+          TF_LITE_KERNEL_LOG(
+              logging_context, "failed to delegate %s node #%d",
+              EnumNameBuiltinOperator(BuiltinOperator_FULLY_CONNECTED),
+              node_index);
+          return kTfLiteError;
+        }
+        input_value_id = reshaped_id;
+      }
       if (dynamically_quantized) {
         TfLiteAffineQuantization* filter_params =
             reinterpret_cast<TfLiteAffineQuantization*>(
@@ -4460,10 +4555,10 @@ class Subgraph {
                              -1);
           return kTfLiteError;
         }
-        status = xnn_define_convert(
-            subgraph,
-            /*input_id=*/input_output_tensors.at(node->inputs->data[0]),
-            dq_quantized_id, /*flags=*/0);
+        status =
+            xnn_define_convert(subgraph,
+                               /*input_id=*/input_value_id, dq_quantized_id,
+                               /*flags=*/0);
         if (status != xnn_status_success) {
           TF_LITE_KERNEL_LOG(
               logging_context, "failed to delegate %s node #%d",
@@ -4518,9 +4613,7 @@ class Subgraph {
                 ? input_output_tensors.at(bias_tensor_id)
                 : XNN_INVALID_VALUE_ID,
             /*output_id=*/input_output_tensors.at(node->outputs->data[0]),
-            /*flags=*/fc_params->keep_num_dims
-                ? 0
-                : XNN_FLAG_TENSORFLOW_RESHAPE_2D);
+            /*flags=*/0);
         if (status != xnn_status_success) {
           TF_LITE_KERNEL_LOG(
               logging_context, "failed to delegate %s node #%d",
@@ -4531,15 +4624,13 @@ class Subgraph {
       } else {
         const xnn_status status = xnn_define_fully_connected(
             subgraph, output_min, output_max,
-            /*input_id=*/input_output_tensors.at(node->inputs->data[0]),
+            /*input_id=*/input_value_id,
             /*filter_id=*/input_output_tensors.at(node->inputs->data[1]),
             /*bias_id=*/bias_tensor_id >= 0
                 ? input_output_tensors.at(bias_tensor_id)
                 : XNN_INVALID_VALUE_ID,
             /*output_id=*/input_output_tensors.at(node->outputs->data[0]),
-            /*flags=*/fc_params->keep_num_dims
-                ? 0
-                : XNN_FLAG_TENSORFLOW_RESHAPE_2D);
+            /*flags=*/0);
         if (status != xnn_status_success) {
           TF_LITE_KERNEL_LOG(
               logging_context, "failed to delegate %s node #%d",
@@ -6436,8 +6527,7 @@ class Subgraph {
   static TfLiteStatus VisitVarHandleNode(xnn_subgraph_t subgraph,
                                          Delegate& delegate,
                                          TfLiteContext* logging_context,
-                                         int node_index,
-                                         const TfLiteNode* node) {
+                                         int node_index, TfLiteNode* node) {
     if (!delegate.support_variable_ops()) {
       return kTfLiteError;
     }
@@ -7143,7 +7233,7 @@ TfLiteXNNPackDelegateOptions TfLiteXNNPackDelegateOptionsDefault() {
   options.flags |= TFLITE_XNNPACK_DELEGATE_FLAG_QU8;
   options.flags |= TFLITE_XNNPACK_DELEGATE_FLAG_DYNAMIC_FULLY_CONNECTED;
 #endif  // XNNPACK_DELEGATE_TEST_MODE
-
+  options.weight_cache_file_descriptor = -1;
   return options;
 }
 

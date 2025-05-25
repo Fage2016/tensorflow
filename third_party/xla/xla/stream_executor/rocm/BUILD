@@ -818,7 +818,6 @@ cc_library(
     ],
     visibility = ["//visibility:public"],
     deps = [
-        ":all_reduce_kernel_rocm",
         ":amdhipblaslt_plugin",
         ":buffer_comparator_kernel_rocm",
         ":hipfft_plugin",
@@ -989,6 +988,7 @@ xla_test(
         "//xla/stream_executor:platform_manager",
         "//xla/stream_executor:stream",
         "//xla/stream_executor:typed_kernel_factory",
+        "//xla/stream_executor/gpu:gpu_test_kernels",
         "//xla/tsl/platform:status_matchers",
         "//xla/tsl/platform:statusor",
         "//xla/tsl/platform:test",
@@ -1140,27 +1140,6 @@ rocm_library(
     alwayslink = 1,
 )
 
-rocm_library(
-    name = "all_reduce_kernel_rocm",
-    srcs = [
-        "all_reduce_kernel_rocm.cc",
-        "//xla/stream_executor/gpu:all_reduce_kernel_lib.cu.h",
-    ],
-    # copybara:uncomment compatible_with = ["//buildenv/target:non_prod"],
-    tags = [
-        "gpu",
-        "rocm-only",
-    ],
-    deps = [
-        ":rocm_platform_id",
-        "//xla/stream_executor:kernel_spec",
-        "//xla/stream_executor/gpu:all_reduce_kernel",
-        "//xla/stream_executor/gpu:gpu_kernel_registry",
-        "@local_config_rocm//rocm:rocm_headers",
-    ],
-    alwayslink = 1,
-)
-
 [rocm_library(
     name = "cub_sort_kernel_rocm_{}".format(typename),
     srcs = ["cub_sort_kernel_rocm.cu.cc"],
@@ -1186,7 +1165,9 @@ rocm_library(
 rocm_library(
     name = "topk_kernel_rocm",
     srcs = [
-        "topk_kernel_rocm.cu.cc",
+        "topk_kernel_rocm_bfloat16.cu.cc",
+        "topk_kernel_rocm_common.cu.h",
+        "topk_kernel_rocm_float.cu.cc",
     ],
     # copybara:uncomment compatible_with = ["//buildenv/target:non_prod"],
     tags = [

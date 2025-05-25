@@ -15,7 +15,7 @@ limitations under the License.
 
 // This transformation pass applies quantization on TFLite dialect.
 
-#include <cstddef>
+#include <memory>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -94,9 +94,11 @@ static LogicalResult HasDQParent(Value value, Value& dq_input) {
   return failure();
 }
 
+// The assumption here is that the op has at least one DQ operand since the
+// pattern's root is that.
 static OpQuantizationType GetOpQuantizationType(Operation* op) {
-  // The assumption here is that the op has at least one DQ operand since the
-  // pattern's root is that.
+  const absl::flat_hash_set<std::string> kDrqOpsWithNoDrqInput = {
+      "tfl.embedding_lookup"};
 
   // Indicates if an input which is not an FQ is seen.
   bool non_fq_float_input_seen = false;
@@ -110,6 +112,10 @@ static OpQuantizationType GetOpQuantizationType(Operation* op) {
     if (HasDQParent(operand, dq_input).succeeded()) {
       // Operands with QDQ can not specify the quantization type.
       continue;
+    }
+
+    if (kDrqOpsWithNoDrqInput.contains(op->getName().getStringRef().str())) {
+      return OpQuantizationType::kDRQ;
     }
 
     auto element_type = getElementTypeOrSelf(operand.getType());
@@ -222,6 +228,12 @@ class StrictQuantizationPattern : public RewritePattern {
 
       auto op_quant_type = GetOpQuantizationType(quantizing_op);
 
+      if (op_quant_type == OpQuantizationType::kWeightOnly) {
+        return rewriter.notifyMatchFailure(
+            quantizing_op,
+            "Weight only op does not need any Q-DQ fused to it.");
+      }
+
       if (op_quant_type == OpQuantizationType::kUnsupported) {
         return rewriter.notifyMatchFailure(
             quantizing_op, "Unsupported quantization type for op: " +
@@ -241,13 +253,11 @@ class StrictQuantizationPattern : public RewritePattern {
         }
 
         if (Value dq_input; HasDQParent(operand, dq_input).succeeded()) {
-          if (op_quant_type == OpQuantizationType::kWeightOnly) {
-            inputs.push_back(operand);
-          } else {
-            // In both SRQ and DRQ cases, the DQ is fused in.
-            is_operand_or_result_modified = true;
-            inputs.push_back(dq_input);
-          }
+          // In both SRQ and DRQ cases, the DQ is fused in.
+          // At this stage, we know it is not weight only as we have explicitly
+          // returned from this function above if it is weight only.
+          is_operand_or_result_modified = true;
+          inputs.push_back(dq_input);
         } else if (Value fq_input; IsDrqTensor(operand, fq_input).succeeded()) {
           is_operand_or_result_modified = true;
           inputs.push_back(fq_input);
